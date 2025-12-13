@@ -10,7 +10,6 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
@@ -21,20 +20,34 @@ import java.awt.event.KeyEvent
 import javax.swing.*
 
 /**
+ * Input mode for the unified panel
+ */
+enum class InputMode {
+    CHAT, AGENT
+}
+
+/**
  * Main panel for PyCharm Agent tool window
+ * GitHub Copilot style: Unified Chat + Agent with mode toggle
  */
 class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
 
-    private val tabbedPane = JBTabbedPane()
+    private val cardLayout = CardLayout()
+    private val contentPanel = JPanel(cardLayout)
     private val chatPanel = ChatPanel(project)
     private val agentPanel = AgentModePanel(project)
+
+    private var currentMode = InputMode.CHAT
+    private val modeToggleButton = JButton()
+    private val modeLabel = JLabel()
 
     init {
         // Header with Settings button
         val headerPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(2, 5)
-            val settingsButton = JButton("⚙ Settings").apply {
+            val settingsButton = JButton("⚙").apply {
                 toolTipText = "Open PyCharm Agent Settings"
+                preferredSize = Dimension(28, 28)
                 addActionListener {
                     ShowSettingsUtil.getInstance().showSettingsDialog(project, AgentSettingsConfigurable::class.java)
                 }
@@ -43,9 +56,89 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
         add(headerPanel, BorderLayout.NORTH)
 
-        tabbedPane.addTab("Chat", chatPanel)
-        tabbedPane.addTab("Agent", agentPanel)
-        add(tabbedPane, BorderLayout.CENTER)
+        // Content panel with CardLayout
+        contentPanel.add(chatPanel, "CHAT")
+        contentPanel.add(agentPanel, "AGENT")
+        add(contentPanel, BorderLayout.CENTER)
+
+        // Bottom mode toggle bar (GitHub Copilot style)
+        val modeBar = createModeBar()
+        add(modeBar, BorderLayout.SOUTH)
+
+        // Set initial mode
+        updateModeUI()
+    }
+
+    private fun createModeBar(): JPanel {
+        return JPanel(BorderLayout()).apply {
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
+                JBUI.Borders.empty(6, 10)
+            )
+            background = JBColor(Color(245, 245, 245), Color(45, 45, 45))
+
+            // Left side: Mode toggle button
+            val togglePanel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0)).apply {
+                isOpaque = false
+
+                modeToggleButton.apply {
+                    preferredSize = Dimension(90, 26)
+                    isFocusPainted = false
+                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    addActionListener { toggleMode() }
+                }
+                add(modeToggleButton)
+
+                modeLabel.apply {
+                    font = font.deriveFont(11f)
+                    foreground = JBColor.gray
+                }
+                add(modeLabel)
+            }
+            add(togglePanel, BorderLayout.WEST)
+
+            // Right side: Keyboard shortcut hint
+            val hintLabel = JLabel("⇧Tab to switch").apply {
+                font = font.deriveFont(10f)
+                foreground = JBColor(Color(150, 150, 150), Color(100, 100, 100))
+            }
+            add(hintLabel, BorderLayout.EAST)
+        }
+    }
+
+    private fun toggleMode() {
+        currentMode = if (currentMode == InputMode.CHAT) InputMode.AGENT else InputMode.CHAT
+        updateModeUI()
+    }
+
+    private fun updateModeUI() {
+        when (currentMode) {
+            InputMode.CHAT -> {
+                cardLayout.show(contentPanel, "CHAT")
+                modeToggleButton.text = "💬 Chat"
+                modeToggleButton.toolTipText = "Switch to Agent mode (⇧Tab)"
+                modeLabel.text = "General conversation"
+                modeToggleButton.background = JBColor(Color(230, 240, 255), Color(50, 60, 80))
+            }
+            InputMode.AGENT -> {
+                cardLayout.show(contentPanel, "AGENT")
+                modeToggleButton.text = "🤖 Agent"
+                modeToggleButton.toolTipText = "Switch to Chat mode (⇧Tab)"
+                modeLabel.text = "Plan & execute code changes"
+                modeToggleButton.background = JBColor(Color(255, 240, 230), Color(80, 60, 50))
+            }
+        }
+    }
+
+    /**
+     * Handle keyboard shortcut for mode switching
+     */
+    fun handleKeyEvent(e: KeyEvent): Boolean {
+        if (e.keyCode == KeyEvent.VK_TAB && e.isShiftDown) {
+            toggleMode()
+            return true
+        }
+        return false
     }
 }
 

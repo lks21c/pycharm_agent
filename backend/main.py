@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers import chat, agent, config
 from services.config_manager import ConfigManager
+from services.api_key_manager import get_key_manager
+from services import llm_service
 
 
 @asynccontextmanager
@@ -16,8 +18,14 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager - startup and shutdown logic"""
     # Startup: Initialize singleton services
     print("[Backend] Starting PyCharm Agent Backend...")
-    ConfigManager.get_instance()
+    config_manager = ConfigManager.get_instance()
     print("[Backend] ConfigManager initialized")
+
+    # Initialize key manager and connect to LLM service
+    key_manager = get_key_manager(config_manager)
+    llm_service.set_key_manager(key_manager)
+    print(f"[Backend] GeminiKeyManager initialized with {key_manager.get_key_count()} keys")
+
     yield
     # Shutdown: Cleanup
     print("[Backend] Shutting down PyCharm Agent Backend...")

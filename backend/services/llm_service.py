@@ -8,9 +8,18 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
 import aiohttp
+
+# Optional key manager import - will be used if available
+_key_manager = None
+
+
+def set_key_manager(manager):
+    """Set the key manager instance for Gemini key rotation"""
+    global _key_manager
+    _key_manager = manager
 
 
 class LLMService:
@@ -22,8 +31,28 @@ class LLMService:
 
     # ========== Config Helpers ==========
 
+    async def _get_gemini_config_async(self) -> tuple[str, str, str, Optional[str]]:
+        """Get Gemini config with key rotation: (api_key, model, base_url, key_id). Raises if no api_key available."""
+        global _key_manager
+        cfg = self.config.get("gemini", {})
+        model = cfg.get("model", "gemini-2.5-flash")
+        base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+
+        # Try to get key from key manager (for multi-key rotation)
+        if _key_manager:
+            api_key, key_id = await _key_manager.get_available_key()
+            if api_key:
+                return api_key, model, base_url, key_id
+
+        # Fallback to single key from config
+        api_key = cfg.get("apiKey")
+        if not api_key:
+            raise ValueError("Gemini API key not configured")
+
+        return api_key, model, base_url, None
+
     def _get_gemini_config(self) -> tuple[str, str, str]:
-        """Get Gemini config: (api_key, model, base_url). Raises if api_key missing."""
+        """Get Gemini config (sync version): (api_key, model, base_url). Raises if api_key missing."""
         cfg = self.config.get("gemini", {})
         api_key = cfg.get("apiKey")
         if not api_key:
@@ -309,22 +338,39 @@ class LLMService:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
     async def _call_gemini(self, prompt: str, context: str | None = None, max_retries: int = 3) -> str:
-        """Call Google Gemini API with retry logic"""
-        api_key, model, base_url = self._get_gemini_config()
-        print(f"[LLMService] Calling Gemini API with model: {model}")
+        """Call Google Gemini API with retry logic and key rotation"""
+        global _key_manager
+
+        api_key, model, base_url, key_id = await self._get_gemini_config_async()
+        print(f"[LLMService] Calling Gemini API with model: {model}" + (f" (key: {key_id})" if key_id else ""))
 
         url = f"{base_url}:generateContent?key={api_key}"
         full_prompt = self._build_prompt(prompt, context)
         payload = self._build_gemini_payload(full_prompt)
 
         async def _execute_request():
+            nonlocal api_key, url, key_id
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(url, json=payload) as response:
-                    if response.status in (503, 429):
-                        error_type = "rate limit" if response.status == 429 else "overloaded"
+                    if response.status == 429:
                         error_text = await response.text()
-                        raise Exception(f"Gemini API {error_type} ({response.status}): {error_text}")
+                        # Handle rate limit with key rotation
+                        if _key_manager and key_id:
+                            await _key_manager.mark_key_rate_limited(
+                                key_id,
+                                error_message=error_text
+                            )
+                            # Try to get a new key
+                            api_key, key_id = await _key_manager.get_available_key()
+                            if api_key:
+                                url = f"{base_url}:generateContent?key={api_key}"
+                                print(f"[LLMService] Rate limited, switching to key: {key_id}")
+                        raise Exception(f"Gemini API rate limit (429): {error_text}")
+
+                    if response.status == 503:
+                        error_text = await response.text()
+                        raise Exception(f"Gemini API overloaded (503): {error_text}")
 
                     if response.status != 200:
                         error_text = await response.text()
@@ -333,6 +379,11 @@ class LLMService:
 
                     data = await response.json()
                     response_text = self._parse_gemini_response(data)
+
+                    # Mark key as successful
+                    if _key_manager and key_id:
+                        await _key_manager.mark_key_success(key_id)
+
                     print(f"[LLMService] Received response from {model} (length: {len(response_text)} chars)")
                     return response_text
 
@@ -358,14 +409,25 @@ class LLMService:
         return self._parse_openai_response(data)
 
     async def _call_gemini_stream(self, prompt: str, context: str | None = None):
-        """Call Google Gemini API with streaming"""
-        api_key, model, base_url = self._get_gemini_config()
+        """Call Google Gemini API with streaming and key rotation"""
+        global _key_manager
+
+        api_key, model, base_url, key_id = await self._get_gemini_config_async()
         url = f"{base_url}:streamGenerateContent?key={api_key}&alt=sse"
         full_prompt = self._build_prompt(prompt, context)
         payload = self._build_gemini_payload(full_prompt)
 
-        async for content in self._stream_response(url, payload, None, "Gemini", self._parse_gemini_stream_line):
-            yield content
+        try:
+            async for content in self._stream_response(url, payload, None, "Gemini", self._parse_gemini_stream_line):
+                yield content
+            # Mark key as successful after streaming completes
+            if _key_manager and key_id:
+                await _key_manager.mark_key_success(key_id)
+        except Exception as e:
+            # Handle rate limit in streaming
+            if "429" in str(e) and _key_manager and key_id:
+                await _key_manager.mark_key_rate_limited(key_id, error_message=str(e))
+            raise
 
     async def _call_vllm_stream(self, prompt: str, context: str | None = None):
         """Call vLLM endpoint with streaming"""

@@ -4,6 +4,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
+import com.intellij.util.xmlb.annotations.XCollection
 
 /**
  * Persistent settings for PyCharm Agent plugin
@@ -15,14 +16,20 @@ import com.intellij.openapi.components.Storage
 class AgentSettings : PersistentStateComponent<AgentSettings.State> {
 
     data class State(
-        var backendUrl: String = "http://localhost:8765",
+        var backendUrl: String = "http://localhost:8000",
         var provider: String = "gemini",
-        var geminiApiKey: String = "",
+        // Gemini settings - multi-key support (up to 10)
+        @XCollection(style = XCollection.Style.v2)
+        var geminiApiKeys: MutableList<String> = mutableListOf(),
         var geminiModel: String = "gemini-2.5-flash",
+        // OpenAI settings
         var openaiApiKey: String = "",
         var openaiModel: String = "gpt-4",
+        // vLLM settings
         var vllmEndpoint: String = "http://localhost:8000",
-        var vllmModel: String = "",
+        var vllmModel: String = "meta-llama/Llama-2-7b-chat-hf",
+        var vllmApiKey: String = "",
+        // Agent behavior
         var autoAcceptDiff: Boolean = false,
         var showDiffPreview: Boolean = true
     )
@@ -43,14 +50,16 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         get() = state.provider
         set(value) { state.provider = value }
 
-    var geminiApiKey: String
-        get() = state.geminiApiKey
-        set(value) { state.geminiApiKey = value }
+    // Gemini multi-key management
+    var geminiApiKeys: MutableList<String>
+        get() = state.geminiApiKeys
+        set(value) { state.geminiApiKeys = value }
 
     var geminiModel: String
         get() = state.geminiModel
         set(value) { state.geminiModel = value }
 
+    // OpenAI
     var openaiApiKey: String
         get() = state.openaiApiKey
         set(value) { state.openaiApiKey = value }
@@ -59,6 +68,7 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         get() = state.openaiModel
         set(value) { state.openaiModel = value }
 
+    // vLLM
     var vllmEndpoint: String
         get() = state.vllmEndpoint
         set(value) { state.vllmEndpoint = value }
@@ -67,6 +77,11 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         get() = state.vllmModel
         set(value) { state.vllmModel = value }
 
+    var vllmApiKey: String
+        get() = state.vllmApiKey
+        set(value) { state.vllmApiKey = value }
+
+    // Behavior
     var autoAcceptDiff: Boolean
         get() = state.autoAcceptDiff
         set(value) { state.autoAcceptDiff = value }
@@ -76,6 +91,8 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         set(value) { state.showDiffPreview = value }
 
     companion object {
+        const val MAX_GEMINI_KEYS = 10
+
         fun getInstance(): AgentSettings {
             return ApplicationManager.getApplication().getService(AgentSettings::class.java)
         }

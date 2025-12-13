@@ -77,7 +77,13 @@ class ConfigManager:
         """Get default configuration"""
         return {
             "provider": "gemini",
-            "gemini": {"apiKey": "", "model": "gemini-2.5-flash"},
+            "gemini": {
+                "apiKey": "",  # Legacy single-key (for backward compatibility)
+                "model": "gemini-2.5-flash",
+                "keys": [],  # Multi-key support: list of {key, id, enabled, ...}
+                "activeKeyIndex": 0,
+                "rotationStrategy": "round-robin"
+            },
             "vllm": {
                 "endpoint": "http://localhost:8000",
                 "apiKey": "",
