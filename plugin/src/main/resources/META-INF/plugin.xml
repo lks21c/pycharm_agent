@@ -1,0 +1,79 @@
+<idea-plugin>
+    <id>com.hdsp.pycharm-agent</id>
+    <name>PyCharm Agent</name>
+    <vendor email="support@hdsp.com" url="https://github.com/hdsp">HDSP</vendor>
+
+    <description><![CDATA[
+    AI-powered coding assistant for PyCharm.
+
+    <h3>Features:</h3>
+    <ul>
+        <li><b>Chat Mode</b>: Ask questions and get code snippets</li>
+        <li><b>Agent Mode</b>: Automatic code modifications with diff preview</li>
+        <li>GitHub Copilot-style inline diff preview</li>
+        <li>Support for Gemini, OpenAI, and vLLM</li>
+    </ul>
+
+    <h3>Usage:</h3>
+    <ol>
+        <li>Open the PyCharm Agent tool window (View → Tool Windows → PyCharm Agent)</li>
+        <li>Configure your API key in Settings → PyCharm Agent</li>
+        <li>Start chatting or use Agent mode for automatic code changes</li>
+    </ol>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.python</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window -->
+        <toolWindow id="PyCharm Agent"
+                    secondary="true"
+                    anchor="right"
+                    factoryClass="com.hdsp.pycharm_agent.toolwindow.AgentToolWindowFactory"
+                    icon="/icons/agent.svg"/>
+
+        <!-- Settings -->
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.hdsp.pycharm_agent.settings.AgentSettingsConfigurable"
+                displayName="PyCharm Agent"
+                id="com.hdsp.pycharm_agent.settings"/>
+
+        <applicationService
+                serviceImplementation="com.hdsp.pycharm_agent.settings.AgentSettings"/>
+
+        <!-- Project Service -->
+        <projectService
+                serviceImplementation="com.hdsp.pycharm_agent.services.BackendClient"/>
+
+        <projectService
+                serviceImplementation="com.hdsp.pycharm_agent.services.DiffApplicationService"/>
+    </extensions>
+
+    <actions>
+        <group id="PyCharmAgent.EditorPopup" text="PyCharm Agent">
+            <action id="PyCharmAgent.AcceptDiff"
+                    class="com.hdsp.pycharm_agent.actions.AcceptDiffAction"
+                    text="Accept Change"
+                    description="Accept the proposed code change"/>
+            <action id="PyCharmAgent.RejectDiff"
+                    class="com.hdsp.pycharm_agent.actions.RejectDiffAction"
+                    text="Reject Change"
+                    description="Reject the proposed code change"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+        </group>
+
+        <action id="PyCharmAgent.AcceptDiff.Shortcut"
+                class="com.hdsp.pycharm_agent.actions.AcceptDiffAction"
+                text="Accept Agent Change">
+            <keyboard-shortcut keymap="$default" first-keystroke="TAB"/>
+        </action>
+
+        <action id="PyCharmAgent.RejectDiff.Shortcut"
+                class="com.hdsp.pycharm_agent.actions.RejectDiffAction"
+                text="Reject Agent Change">
+            <keyboard-shortcut keymap="$default" first-keystroke="ESCAPE"/>
+        </action>
+    </actions>
+</idea-plugin>

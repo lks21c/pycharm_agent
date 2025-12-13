@@ -1,0 +1,32 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# IntelliJ Platform cache
+.intellijPlatform/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+plugin/build/
+backend/__pycache__/
