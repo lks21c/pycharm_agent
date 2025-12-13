@@ -1,50 +1,50 @@
 # PyCharm Agent
 
-AI-powered coding assistant for PyCharm with Chat and Agent modes.
+PyCharm용 AI 기반 코딩 어시스턴트 - Chat 모드와 Agent 모드 지원
 
-## Features
+## 기능
 
-### Chat Mode
-- Simple prompt/response interface
-- Streaming responses with real-time display
-- Code blocks with syntax highlighting and copy button
-- Conversation history within session
+### Chat 모드
+- 간단한 프롬프트/응답 인터페이스
+- 실시간 스트리밍 응답 표시
+- 코드 블록 구문 강조 및 복사 버튼
+- 세션 내 대화 기록 유지
 
-### Agent Mode
-- Automatic code modifications with plan-and-execute pattern
-- GitHub Copilot-style diff preview
-- Accept/Reject changes with Tab/Esc shortcuts
-- Step-by-step execution with user approval
+### Agent 모드
+- 계획-실행 패턴 기반 자동 코드 수정
+- GitHub Copilot 스타일 diff 미리보기
+- Tab/Esc 단축키로 변경사항 승인/거부
+- 사용자 승인 기반 단계별 실행
 
-## Architecture
+## 아키텍처
 
 ```
 ┌──────────────────────────────────┐
-│   PyCharm Plugin (Kotlin)        │
-│   - Chat Panel (Tool Window)     │
-│   - Agent Panel                  │
-│   - Diff Highlighter (Editor)    │
+│   PyCharm 플러그인 (Kotlin)       │
+│   - Chat 패널 (Tool Window)      │
+│   - Agent 패널                   │
+│   - Diff 하이라이터 (에디터)      │
 └────────────┬─────────────────────┘
              │ HTTP/SSE
 ┌────────────┴─────────────────────┐
-│   FastAPI Backend (Python)       │
-│   - Chat API (streaming)         │
-│   - Agent API (plan/execute)     │
-│   - LLM Service (Gemini/OpenAI)  │
+│   FastAPI 백엔드 (Python)         │
+│   - Chat API (스트리밍)          │
+│   - Agent API (계획/실행)        │
+│   - LLM 서비스 (Gemini/OpenAI)   │
 └──────────────────────────────────┘
 ```
 
-## Prerequisites
+## 필수 요구사항
 
-- **Python 3.9+** with pip
-- **Java 17+** (for plugin development)
+- **Python 3.9+** (pip 포함)
+- **Java 17+** (플러그인 개발용)
   - macOS: `brew install openjdk@17`
   - Ubuntu: `sudo apt install openjdk-17-jdk`
-- **PyCharm** (Professional or Community Edition)
+- **PyCharm** (Professional 또는 Community Edition)
 
-## Getting Started
+## 시작하기
 
-### 1. Start the Backend
+### 1. 백엔드 실행
 
 ```bash
 cd backend
@@ -52,9 +52,9 @@ pip install fastapi uvicorn aiohttp pydantic sse-starlette eval_type_backport
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 2. Configure API Key
+### 2. API 키 설정
 
-Create `~/.pycharm_agent/config.json`:
+`~/.pycharm_agent/config.json` 파일 생성:
 
 ```json
 {
@@ -66,49 +66,49 @@ Create `~/.pycharm_agent/config.json`:
 }
 ```
 
-### 3. Build and Install Plugin
+### 3. 플러그인 빌드 및 설치
 
 ```bash
 cd plugin
 ./gradlew buildPlugin
 ```
 
-Install the plugin from `plugin/build/distributions/pycharm-agent-*.zip`
+`plugin/build/distributions/pycharm-agent-*.zip`에서 플러그인 설치
 
-Or run in development mode:
+개발 모드로 실행:
 ```bash
 ./gradlew runIde
 ```
 
-## API Endpoints
+## API 엔드포인트
 
-### Chat Mode
-- `POST /api/chat/message` - Single response
-- `POST /api/chat/stream` - SSE streaming response
+### Chat 모드
+- `POST /api/chat/message` - 단일 응답
+- `POST /api/chat/stream` - SSE 스트리밍 응답
 
-### Agent Mode
-- `POST /api/agent/plan` - Generate execution plan
-- `POST /api/agent/execute-step` - Execute step and get diff
-- `POST /api/agent/refine` - Refine code after error
-- `POST /api/agent/replan` - Replan after failure
+### Agent 모드
+- `POST /api/agent/plan` - 실행 계획 생성
+- `POST /api/agent/execute-step` - 단계 실행 및 diff 반환
+- `POST /api/agent/refine` - 에러 후 코드 수정
+- `POST /api/agent/replan` - 실패 후 재계획
 
-### Configuration
-- `GET /api/config` - Get current config
-- `PUT /api/config` - Update config
-- `POST /api/config/validate` - Validate API key
+### 설정
+- `GET /api/config` - 현재 설정 조회
+- `PUT /api/config` - 설정 업데이트
+- `POST /api/config/validate` - API 키 검증
 
-## Project Structure
+## 프로젝트 구조
 
 ```
 pycharm_agent/
 ├── backend/
-│   ├── main.py              # FastAPI entry
+│   ├── main.py              # FastAPI 진입점
 │   ├── routers/
-│   │   ├── chat.py          # Chat endpoints
-│   │   ├── agent.py         # Agent endpoints
-│   │   └── config.py        # Config endpoints
+│   │   ├── chat.py          # Chat 엔드포인트
+│   │   ├── agent.py         # Agent 엔드포인트
+│   │   └── config.py        # Config 엔드포인트
 │   ├── services/
-│   │   ├── llm_service.py   # LLM provider abstraction
+│   │   ├── llm_service.py   # LLM 제공자 추상화
 │   │   ├── config_manager.py
 │   │   └── diff_generator.py
 │   └── models/
@@ -135,35 +135,35 @@ pycharm_agent/
 └── README.md
 ```
 
-## Supported LLM Providers
+## 지원 LLM 제공자
 
-- **Gemini** (default) - Google's Gemini 2.5 Flash/Pro
+- **Gemini** (기본) - Google Gemini 2.5 Flash/Pro
 - **OpenAI** - GPT-4, GPT-4-turbo
-- **vLLM** - Self-hosted models
+- **vLLM** - 자체 호스팅 모델
 
-## Keyboard Shortcuts
+## 키보드 단축키
 
-| Shortcut | Action |
-|----------|--------|
-| Tab | Accept pending diff |
-| Esc | Reject pending diff |
+| 단축키 | 동작 |
+|--------|------|
+| Tab | 대기 중인 diff 승인 |
+| Esc | 대기 중인 diff 거부 |
 
-## Development
+## 개발
 
-### Backend Development
+### 백엔드 개발
 ```bash
 cd backend
 pip install -e ".[dev]"
 pytest
 ```
 
-### Plugin Development
+### 플러그인 개발
 ```bash
 cd plugin
-./gradlew runIde  # Run with test PyCharm instance
-./gradlew test    # Run tests
+./gradlew runIde  # 테스트 PyCharm 인스턴스로 실행
+./gradlew test    # 테스트 실행
 ```
 
-## License
+## 라이선스
 
 MIT License

@@ -4,7 +4,9 @@ import com.hdsp.pycharm_agent.services.BackendClient
 import com.hdsp.pycharm_agent.services.DiffResult
 import com.hdsp.pycharm_agent.services.PlanResponse
 import com.hdsp.pycharm_agent.services.PlanStep
+import com.hdsp.pycharm_agent.settings.AgentSettingsConfigurable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
@@ -28,6 +30,19 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val agentPanel = AgentModePanel(project)
 
     init {
+        // Header with Settings button
+        val headerPanel = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(2, 5)
+            val settingsButton = JButton("⚙ Settings").apply {
+                toolTipText = "Open PyCharm Agent Settings"
+                addActionListener {
+                    ShowSettingsUtil.getInstance().showSettingsDialog(project, AgentSettingsConfigurable::class.java)
+                }
+            }
+            add(settingsButton, BorderLayout.EAST)
+        }
+        add(headerPanel, BorderLayout.NORTH)
+
         tabbedPane.addTab("Chat", chatPanel)
         tabbedPane.addTab("Agent", agentPanel)
         add(tabbedPane, BorderLayout.CENTER)
