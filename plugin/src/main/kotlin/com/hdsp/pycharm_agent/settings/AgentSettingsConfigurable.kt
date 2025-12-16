@@ -59,6 +59,9 @@ class AgentSettingsConfigurable : Configurable {
     private var vllmApiKeyField: JBPasswordField? = null
     private var testVllmButton: JButton? = null
 
+    // Agent behavior
+    private var autoExecuteCheckbox: JCheckBox? = null
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -105,7 +108,7 @@ class AgentSettingsConfigurable : Configurable {
 
     private fun createBackendPanel(): JPanel {
         val panel = JPanel(BorderLayout(JBUI.scale(10), 0))
-        panel.border = BorderFactory.createTitledBorder("Backend Server")
+        panel.border = BorderFactory.createTitledBorder("Backend Server (HDSP Agent)")
 
         backendUrlField = JBTextField()
         backendUrlField!!.preferredSize = Dimension(300, backendUrlField!!.preferredSize.height)
@@ -119,7 +122,20 @@ class AgentSettingsConfigurable : Configurable {
         inputPanel.add(backendUrlField!!, BorderLayout.CENTER)
         inputPanel.add(testBackendButton!!, BorderLayout.EAST)
 
-        panel.add(inputPanel, BorderLayout.CENTER)
+        // Agent behavior options
+        autoExecuteCheckbox = JCheckBox("Auto-execute mode (execute all steps automatically)")
+
+        val optionsPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+            add(autoExecuteCheckbox)
+        }
+
+        val mainPanel = JPanel()
+        mainPanel.layout = BoxLayout(mainPanel, BoxLayout.Y_AXIS)
+        mainPanel.add(inputPanel)
+        mainPanel.add(Box.createVerticalStrut(JBUI.scale(5)))
+        mainPanel.add(optionsPanel)
+
+        panel.add(mainPanel, BorderLayout.CENTER)
 
         return panel
     }
@@ -474,8 +490,8 @@ class AgentSettingsConfigurable : Configurable {
                 .toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url("$url/api/config")
-                .put(requestBody)
+                .url("$url/config")
+                .post(requestBody)
                 .build()
 
             val response = client.newCall(request).execute()
@@ -498,12 +514,13 @@ class AgentSettingsConfigurable : Configurable {
                 openaiModelCombo?.selectedItem != settings.openaiModel ||
                 vllmEndpointField?.text != settings.vllmEndpoint ||
                 vllmModelField?.text != settings.vllmModel ||
-                String(vllmApiKeyField?.password ?: charArrayOf()) != settings.vllmApiKey
+                String(vllmApiKeyField?.password ?: charArrayOf()) != settings.vllmApiKey ||
+                autoExecuteCheckbox?.isSelected != settings.autoExecuteMode
     }
 
     override fun apply() {
         val settings = AgentSettings.getInstance()
-        settings.backendUrl = backendUrlField?.text ?: "http://localhost:8000"
+        settings.backendUrl = backendUrlField?.text ?: "http://localhost:8888"
         settings.provider = providerCombo?.selectedItem as? String ?: "gemini"
         settings.geminiModel = geminiModelCombo?.selectedItem as? String ?: "gemini-2.5-flash"
         settings.openaiApiKey = String(openaiApiKeyField?.password ?: charArrayOf())
@@ -511,6 +528,7 @@ class AgentSettingsConfigurable : Configurable {
         settings.vllmEndpoint = vllmEndpointField?.text ?: "http://localhost:8000"
         settings.vllmModel = vllmModelField?.text ?: ""
         settings.vllmApiKey = String(vllmApiKeyField?.password ?: charArrayOf())
+        settings.autoExecuteMode = autoExecuteCheckbox?.isSelected ?: false
 
         // Sync to backend
         syncToBackend()
@@ -522,6 +540,7 @@ class AgentSettingsConfigurable : Configurable {
         backendUrlField?.text = settings.backendUrl
         providerCombo?.selectedItem = settings.provider
         providerCardLayout?.show(providerCardsPanel, settings.provider)
+        autoExecuteCheckbox?.isSelected = settings.autoExecuteMode
 
         // Gemini
         geminiModelCombo?.selectedItem = settings.geminiModel
@@ -562,5 +581,6 @@ class AgentSettingsConfigurable : Configurable {
         vllmModelField = null
         vllmApiKeyField = null
         testVllmButton = null
+        autoExecuteCheckbox = null
     }
 }

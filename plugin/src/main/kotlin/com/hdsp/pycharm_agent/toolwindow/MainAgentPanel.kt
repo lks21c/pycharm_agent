@@ -1,9 +1,7 @@
 package com.hdsp.pycharm_agent.toolwindow
 
-import com.hdsp.pycharm_agent.services.BackendClient
-import com.hdsp.pycharm_agent.services.DiffResult
-import com.hdsp.pycharm_agent.services.PlanResponse
-import com.hdsp.pycharm_agent.services.PlanStep
+import com.hdsp.pycharm_agent.services.*
+import com.hdsp.pycharm_agent.settings.AgentSettings
 import com.hdsp.pycharm_agent.settings.AgentSettingsConfigurable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -395,7 +393,7 @@ class MessagePanel(
 }
 
 /**
- * Agent mode panel - plan execution with diff preview (GitHub Copilot style)
+ * Agent mode panel - plan execution with diff preview (HDSP Agent Server integration)
  */
 class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 
@@ -410,13 +408,14 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
     }
     private val statusLabel = JLabel(" ")
     private val executeNextButton = JButton("Execute Next Step")
+    private val executeAllButton = JButton("Execute All")
     private val acceptButton = JButton("✓ Accept")
     private val rejectButton = JButton("✗ Reject")
 
-    private var currentPlan: PlanResponse? = null
+    private var currentPlan: HdspPlanResponse? = null
     private var currentStepIndex = 0
     private var pendingDiff: DiffResult? = null
-    private val stepPanels = mutableListOf<StepPanel>()
+    private val stepPanels = mutableListOf<HdspStepPanel>()
 
     init {
         // Request input panel
@@ -444,6 +443,7 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 
             val buttonsPanel = JPanel(FlowLayout(FlowLayout.CENTER, 10, 5)).apply {
                 add(executeNextButton)
+                add(executeAllButton)
                 add(acceptButton)
                 add(rejectButton)
             }
@@ -453,12 +453,14 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 
         // Initial button states
         executeNextButton.isEnabled = false
+        executeAllButton.isEnabled = false
         acceptButton.isEnabled = false
         rejectButton.isEnabled = false
 
         // Event handlers
         generatePlanButton.addActionListener { generatePlan() }
         executeNextButton.addActionListener { executeNextStep() }
+        executeAllButton.addActionListener { executeAllSteps() }
         acceptButton.addActionListener { acceptDiff() }
         rejectButton.addActionListener { rejectDiff() }
     }
@@ -484,6 +486,7 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
                     displayPlan(plan)
                     statusLabel.text = "Plan generated. Click 'Execute Next Step' to begin."
                     executeNextButton.isEnabled = plan.plan.steps.isNotEmpty()
+                    executeAllButton.isEnabled = plan.plan.steps.isNotEmpty() && AgentSettings.getInstance().autoExecuteMode
                     generatePlanButton.isEnabled = true
                 }
             } catch (e: Exception) {
@@ -495,7 +498,7 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    private fun displayPlan(plan: PlanResponse) {
+    private fun displayPlan(plan: HdspPlanResponse) {
         stepsPanel.removeAll()
         stepPanels.clear()
 
@@ -517,9 +520,18 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         stepsPanel.add(reasoningPanel)
         stepsPanel.add(Box.createVerticalStrut(10))
 
+        // Goal
+        val goalPanel = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(5)
+            add(JLabel("<html><b>Goal:</b> ${plan.plan.goal}</html>"), BorderLayout.CENTER)
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        stepsPanel.add(goalPanel)
+        stepsPanel.add(Box.createVerticalStrut(10))
+
         // Steps
         plan.plan.steps.forEachIndexed { index, step ->
-            val stepPanel = StepPanel(index, step)
+            val stepPanel = HdspStepPanel(index, step)
             stepPanels.add(stepPanel)
             stepsPanel.add(stepPanel)
             stepsPanel.add(Box.createVerticalStrut(5))
@@ -535,32 +547,73 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         if (currentStepIndex >= plan.plan.steps.size) {
             statusLabel.text = "All steps completed!"
             executeNextButton.isEnabled = false
+            executeAllButton.isEnabled = false
             return
         }
 
         val step = plan.plan.steps[currentStepIndex]
         stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.IN_PROGRESS)
         executeNextButton.isEnabled = false
+        executeAllButton.isEnabled = false
         statusLabel.text = "Executing step ${currentStepIndex + 1}..."
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val client = project.getService(BackendClient::class.java)
-                val diffResult = client.executeStepSync(step.stepNumber, plan)
+                val toolExecutor = project.getService(ToolExecutor::class.java)
+                var lastDiff: DiffResult? = null
 
-                SwingUtilities.invokeLater {
-                    pendingDiff = diffResult
-                    stepPanels.getOrNull(currentStepIndex)?.showDiff(diffResult)
+                // Execute all tool calls in the step
+                for (toolCall in step.toolCalls) {
+                    val result = toolExecutor.execute(toolCall)
 
-                    // Show diff preview in editor with highlighting
-                    if (diffResult.filePath.isNotEmpty()) {
-                        val diffService = project.getService(com.hdsp.pycharm_agent.services.DiffApplicationService::class.java)
-                        diffService.showDiffPreviewInEditor(diffResult)
+                    if (!result.success) {
+                        SwingUtilities.invokeLater {
+                            statusLabel.text = "Error: ${result.error?.message}"
+                            stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.ERROR)
+                            executeNextButton.isEnabled = true
+                        }
+                        return@executeOnPooledThread
                     }
 
-                    statusLabel.text = "Review the diff. Accept (Tab) or Reject (Esc)"
-                    acceptButton.isEnabled = true
-                    rejectButton.isEnabled = true
+                    // Keep track of the last diff
+                    if (result.diff != null) {
+                        lastDiff = result.diff
+                    }
+
+                    // Handle final answer
+                    if (result.isFinalAnswer) {
+                        SwingUtilities.invokeLater {
+                            stepPanels.getOrNull(currentStepIndex)?.showOutput(result.output ?: "")
+                        }
+                    }
+                }
+
+                SwingUtilities.invokeLater {
+                    if (lastDiff != null) {
+                        pendingDiff = lastDiff
+                        stepPanels.getOrNull(currentStepIndex)?.showDiff(lastDiff)
+
+                        // Show diff preview in editor with highlighting
+                        if (lastDiff.filePath.isNotEmpty()) {
+                            val diffService = project.getService(DiffApplicationService::class.java)
+                            diffService.showDiffPreviewInEditor(lastDiff)
+                        }
+
+                        statusLabel.text = "Review the diff. Accept (Tab) or Reject (Esc)"
+                        acceptButton.isEnabled = true
+                        rejectButton.isEnabled = true
+                    } else {
+                        // No diff, step completed
+                        stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.COMPLETED)
+                        currentStepIndex++
+                        statusLabel.text = "Step completed."
+                        executeNextButton.isEnabled = currentStepIndex < plan.plan.steps.size
+                        executeAllButton.isEnabled = currentStepIndex < plan.plan.steps.size && AgentSettings.getInstance().autoExecuteMode
+
+                        if (currentStepIndex >= plan.plan.steps.size) {
+                            statusLabel.text = "All steps completed!"
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 SwingUtilities.invokeLater {
@@ -572,14 +625,73 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    private fun executeAllSteps() {
+        // Auto-execute mode: execute all steps automatically
+        val plan = currentPlan ?: return
+        if (!AgentSettings.getInstance().autoExecuteMode) {
+            statusLabel.text = "Auto-execute mode is disabled. Enable in settings."
+            return
+        }
+
+        executeAllButton.isEnabled = false
+        executeNextButton.isEnabled = false
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val toolExecutor = project.getService(ToolExecutor::class.java)
+
+            while (currentStepIndex < plan.plan.steps.size) {
+                val step = plan.plan.steps[currentStepIndex]
+
+                SwingUtilities.invokeLater {
+                    stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.IN_PROGRESS)
+                    statusLabel.text = "Executing step ${currentStepIndex + 1}..."
+                }
+
+                var stepSuccess = true
+                for (toolCall in step.toolCalls) {
+                    val result = toolExecutor.execute(toolCall)
+
+                    if (!result.success) {
+                        SwingUtilities.invokeLater {
+                            statusLabel.text = "Error at step ${currentStepIndex + 1}: ${result.error?.message}"
+                            stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.ERROR)
+                        }
+                        stepSuccess = false
+                        break
+                    }
+
+                    // Auto-apply diffs in auto-execute mode
+                    if (result.diff != null) {
+                        toolExecutor.applyDiff(result.diff)
+                    }
+                }
+
+                if (!stepSuccess) break
+
+                SwingUtilities.invokeLater {
+                    stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.COMPLETED)
+                }
+
+                currentStepIndex++
+            }
+
+            SwingUtilities.invokeLater {
+                if (currentStepIndex >= plan.plan.steps.size) {
+                    statusLabel.text = "All steps completed!"
+                }
+                executeNextButton.isEnabled = currentStepIndex < plan.plan.steps.size
+            }
+        }
+    }
+
     private fun acceptDiff() {
         val diff = pendingDiff ?: return
         acceptButton.isEnabled = false
         rejectButton.isEnabled = false
 
-        // Apply the diff using DiffApplicationService
-        val diffService = project.getService(com.hdsp.pycharm_agent.services.DiffApplicationService::class.java)
-        val success = diffService.applyDiff(diff)
+        // Apply the diff using ToolExecutor
+        val toolExecutor = project.getService(ToolExecutor::class.java)
+        val success = toolExecutor.applyDiff(diff)
 
         if (success) {
             stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.COMPLETED)
@@ -592,6 +704,7 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         pendingDiff = null
         currentStepIndex++
         executeNextButton.isEnabled = currentStepIndex < (currentPlan?.plan?.steps?.size ?: 0)
+        executeAllButton.isEnabled = currentStepIndex < (currentPlan?.plan?.steps?.size ?: 0) && AgentSettings.getInstance().autoExecuteMode
 
         if (currentStepIndex >= (currentPlan?.plan?.steps?.size ?: 0)) {
             statusLabel.text = "All steps completed!"
@@ -612,15 +725,15 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 enum class StepStatus { PENDING, IN_PROGRESS, COMPLETED, REJECTED, ERROR }
 
 /**
- * Individual step panel with status indicator
+ * Individual step panel for HDSP plan steps
  */
-class StepPanel(
+class HdspStepPanel(
     private val index: Int,
-    private val step: PlanStep
+    private val step: HdspPlanStep
 ) : JPanel(BorderLayout()) {
 
     private val statusIcon = JLabel("○")
-    private val diffArea = JBTextArea().apply {
+    private val outputArea = JBTextArea().apply {
         isEditable = false
         font = Font("JetBrains Mono", Font.PLAIN, 11).let { f ->
             if (f.family == "JetBrains Mono") f else Font(Font.MONOSPACED, Font.PLAIN, 11)
@@ -648,35 +761,37 @@ class StepPanel(
         }
         add(headerPanel, BorderLayout.NORTH)
 
-        // Details
+        // Details - tool calls
         val detailsPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
             border = JBUI.Borders.emptyLeft(25)
 
-            val toolLabel = JLabel("Tool: ${step.tool}").apply {
-                font = font.deriveFont(Font.ITALIC, 11f)
-                foreground = JBColor.gray
-            }
-            add(toolLabel)
-
-            step.targetFile?.let { file ->
-                val fileLabel = JLabel("File: $file").apply {
+            step.toolCalls.forEach { toolCall ->
+                val toolLabel = JLabel("🔧 ${toolCall.tool}").apply {
                     font = font.deriveFont(Font.ITALIC, 11f)
                     foreground = JBColor.gray
                 }
-                add(fileLabel)
+                add(toolLabel)
+            }
+
+            step.expectedOutput?.let { expected ->
+                val expectedLabel = JLabel("Expected: $expected").apply {
+                    font = font.deriveFont(Font.ITALIC, 10f)
+                    foreground = JBColor(Color(100, 100, 150), Color(150, 150, 200))
+                }
+                add(expectedLabel)
             }
         }
         add(detailsPanel, BorderLayout.CENTER)
 
-        // Diff area (initially hidden)
-        val diffScrollPane = JBScrollPane(diffArea).apply {
+        // Output area (initially hidden)
+        val outputScrollPane = JBScrollPane(outputArea).apply {
             preferredSize = Dimension(400, 150)
             border = JBUI.Borders.empty(5, 25, 0, 0)
             isVisible = false
         }
-        add(diffScrollPane, BorderLayout.SOUTH)
+        add(outputScrollPane, BorderLayout.SOUTH)
     }
 
     fun setStatus(status: StepStatus) {
@@ -705,9 +820,17 @@ class StepPanel(
     }
 
     fun showDiff(diff: DiffResult) {
-        diffArea.text = diff.unifiedDiff
-        diffArea.isVisible = true
-        (diffArea.parent as? JComponent)?.isVisible = true
+        outputArea.text = diff.unifiedDiff
+        outputArea.isVisible = true
+        (outputArea.parent as? JComponent)?.isVisible = true
+        revalidate()
+        repaint()
+    }
+
+    fun showOutput(output: String) {
+        outputArea.text = output
+        outputArea.isVisible = true
+        (outputArea.parent as? JComponent)?.isVisible = true
         revalidate()
         repaint()
     }

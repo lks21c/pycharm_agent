@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Client for communicating with PyCharm Agent backend
+ * Client for communicating with HDSP Agent Server
  */
 @Service(Service.Level.PROJECT)
 class BackendClient(private val project: Project) {
@@ -35,16 +35,37 @@ class BackendClient(private val project: Project) {
         return AgentSettings.getInstance().backendUrl
     }
 
+    private fun buildLlmConfig(): Map<String, Any?> {
+        val settings = AgentSettings.getInstance()
+        return mapOf(
+            "provider" to settings.provider,
+            "gemini" to mapOf(
+                "apiKeys" to settings.geminiApiKeys,
+                "model" to settings.geminiModel
+            ),
+            "openai" to mapOf(
+                "apiKey" to settings.openaiApiKey,
+                "model" to settings.openaiModel
+            ),
+            "vllm" to mapOf(
+                "endpoint" to settings.vllmEndpoint,
+                "apiKey" to settings.vllmApiKey,
+                "model" to settings.vllmModel
+            )
+        )
+    }
+
     /**
      * Stream chat response via SSE (synchronous version for use with executeOnPooledThread)
      */
     fun streamChatSync(message: String, onChunk: (String) -> Unit) {
         val requestBody = gson.toJson(mapOf(
-            "message" to message
+            "message" to message,
+            "llmConfig" to buildLlmConfig()
         )).toRequestBody(JSON_MEDIA_TYPE)
 
         val request = Request.Builder()
-            .url("${getBaseUrl()}/api/chat/stream")
+            .url("${getBaseUrl()}/chat/stream")
             .post(requestBody)
             .build()
 
@@ -55,21 +76,16 @@ class BackendClient(private val project: Project) {
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 try {
                     val event = gson.fromJson(data, JsonObject::class.java)
-                    when (event.get("type")?.asString) {
-                        "content" -> {
-                            val chunk = event.get("chunk")?.asString ?: ""
-                            onChunk(chunk)
-                        }
-                        "done" -> {
-                            eventSource.cancel()
-                            latch.countDown()
-                        }
-                        "error" -> {
-                            val error = event.get("error")?.asString ?: "Unknown error"
-                            errorRef.set(IOException(error))
-                            eventSource.cancel()
-                            latch.countDown()
-                        }
+                    val content = event.get("content")?.asString
+                    val done = event.get("done")?.asBoolean ?: false
+
+                    if (content != null && content.isNotEmpty()) {
+                        onChunk(content)
+                    }
+
+                    if (done) {
+                        eventSource.cancel()
+                        latch.countDown()
                     }
                 } catch (e: Exception) {
                     // Ignore parse errors, continue streaming
@@ -97,100 +113,115 @@ class BackendClient(private val project: Project) {
     /**
      * Generate execution plan (synchronous version)
      */
-    fun generatePlanSync(request: String): PlanResponse {
+    fun generatePlanSync(request: String): HdspPlanResponse {
         val requestBody = gson.toJson(mapOf(
             "request" to request,
-            "project_context" to mapOf(
-                "project_root" to project.basePath,
-                "open_files" to emptyList<Any>(),
-                "active_file" to null
-            )
-        )).toRequestBody(JSON_MEDIA_TYPE)
-
-        val httpRequest = Request.Builder()
-            .url("${getBaseUrl()}/api/agent/plan")
-            .post(requestBody)
-            .build()
-
-        val response = client.newCall(httpRequest).execute()
-        if (!response.isSuccessful) {
-            throw IOException("Plan generation failed: ${response.code}")
-        }
-        val body = response.body?.string() ?: throw IOException("Empty response")
-        return gson.fromJson(body, PlanResponse::class.java)
-    }
-
-    /**
-     * Execute a single step and get diff (synchronous version)
-     */
-    fun executeStepSync(stepNumber: Int, plan: PlanResponse): DiffResult {
-        val step = plan.plan.steps.find { it.stepNumber == stepNumber }
-            ?: throw IOException("Step $stepNumber not found in plan")
-
-        // Get file content if target file exists
-        val filePath = step.targetFile
-        val fileContent = if (filePath != null) {
-            readFileContent(filePath)
-        } else {
-            ""
-        }
-
-        val requestBody = gson.toJson(mapOf(
-            "step" to step,
-            "project_context" to mapOf(
-                "project_root" to project.basePath,
-                "open_files" to emptyList<Any>(),
-                "active_file" to if (filePath != null) mapOf(
-                    "path" to filePath,
-                    "content" to fileContent,
-                    "language" to detectLanguage(filePath)
-                ) else null
+            "projectContext" to mapOf(
+                "projectRoot" to project.basePath,
+                "openFiles" to emptyList<Any>(),
+                "activeFile" to null
             ),
-            "previous_results" to emptyList<Any>()
+            "llmConfig" to buildLlmConfig()
         )).toRequestBody(JSON_MEDIA_TYPE)
 
         val httpRequest = Request.Builder()
-            .url("${getBaseUrl()}/api/agent/execute-step")
+            .url("${getBaseUrl()}/agent/plan")
             .post(requestBody)
             .build()
 
         val response = client.newCall(httpRequest).execute()
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: ""
-            throw IOException("Step execution failed: ${response.code} - $errorBody")
+            throw IOException("Plan generation failed: ${response.code} - $errorBody")
         }
         val body = response.body?.string() ?: throw IOException("Empty response")
-        val stepResponse = gson.fromJson(body, ExecuteStepResponse::class.java)
-
-        return stepResponse.diff ?: DiffResult(
-            filePath = filePath ?: "",
-            hunks = emptyList(),
-            unifiedDiff = "No changes generated",
-            previewContent = fileContent
-        )
+        return gson.fromJson(body, HdspPlanResponse::class.java)
     }
 
-    private fun readFileContent(filePath: String): String {
-        val projectPath = project.basePath ?: return ""
-        val fullPath = if (filePath.startsWith("/")) filePath else "$projectPath/$filePath"
-        return try {
-            java.io.File(fullPath).readText()
-        } catch (e: Exception) {
-            ""
+    /**
+     * Refine code after execution error
+     */
+    fun refineSync(step: HdspPlanStep, error: ErrorInfo, attempt: Int, previousCode: String?): RefineResponse {
+        val requestBody = gson.toJson(mapOf(
+            "step" to step,
+            "error" to error,
+            "attempt" to attempt,
+            "previousCode" to previousCode,
+            "llmConfig" to buildLlmConfig()
+        )).toRequestBody(JSON_MEDIA_TYPE)
+
+        val httpRequest = Request.Builder()
+            .url("${getBaseUrl()}/agent/refine")
+            .post(requestBody)
+            .build()
+
+        val response = client.newCall(httpRequest).execute()
+        if (!response.isSuccessful) {
+            val errorBody = response.body?.string() ?: ""
+            throw IOException("Refine failed: ${response.code} - $errorBody")
         }
+        val body = response.body?.string() ?: throw IOException("Empty response")
+        return gson.fromJson(body, RefineResponse::class.java)
     }
 
-    private fun detectLanguage(filePath: String): String {
-        return when {
-            filePath.endsWith(".py") -> "python"
-            filePath.endsWith(".kt") -> "kotlin"
-            filePath.endsWith(".java") -> "java"
-            filePath.endsWith(".js") -> "javascript"
-            filePath.endsWith(".ts") -> "typescript"
-            filePath.endsWith(".tsx") -> "typescript"
-            filePath.endsWith(".jsx") -> "javascript"
-            else -> "text"
+    /**
+     * Determine replan strategy after error
+     */
+    fun replanSync(
+        originalPlan: HdspExecutionPlan,
+        currentStepIndex: Int,
+        error: ErrorInfo,
+        executionHistory: List<Map<String, Any>>,
+        previousAttempts: Int,
+        previousCodes: List<String>
+    ): ReplanResponse {
+        val requestBody = gson.toJson(mapOf(
+            "originalPlan" to originalPlan,
+            "currentStepIndex" to currentStepIndex,
+            "error" to error,
+            "executionHistory" to executionHistory,
+            "previousAttempts" to previousAttempts,
+            "previousCodes" to previousCodes,
+            "useLlmFallback" to true
+        )).toRequestBody(JSON_MEDIA_TYPE)
+
+        val httpRequest = Request.Builder()
+            .url("${getBaseUrl()}/agent/replan")
+            .post(requestBody)
+            .build()
+
+        val response = client.newCall(httpRequest).execute()
+        if (!response.isSuccessful) {
+            val errorBody = response.body?.string() ?: ""
+            throw IOException("Replan failed: ${response.code} - $errorBody")
         }
+        val body = response.body?.string() ?: throw IOException("Empty response")
+        return gson.fromJson(body, ReplanResponse::class.java)
+    }
+
+    /**
+     * Verify execution state after step completion
+     */
+    fun verifyStateSync(stepIndex: Int, expectedChanges: Map<String, Any>, actualOutput: String): VerifyStateResponse {
+        val requestBody = gson.toJson(mapOf(
+            "stepIndex" to stepIndex,
+            "expectedChanges" to expectedChanges,
+            "actualOutput" to actualOutput,
+            "executionResult" to mapOf<String, Any>()
+        )).toRequestBody(JSON_MEDIA_TYPE)
+
+        val httpRequest = Request.Builder()
+            .url("${getBaseUrl()}/agent/verify-state")
+            .post(requestBody)
+            .build()
+
+        val response = client.newCall(httpRequest).execute()
+        if (!response.isSuccessful) {
+            val errorBody = response.body?.string() ?: ""
+            throw IOException("Verify state failed: ${response.code} - $errorBody")
+        }
+        val body = response.body?.string() ?: throw IOException("Empty response")
+        return gson.fromJson(body, VerifyStateResponse::class.java)
     }
 
     /**
@@ -209,37 +240,100 @@ class BackendClient(private val project: Project) {
             false
         }
     }
+
+    /**
+     * Get configuration from server
+     */
+    fun getConfigSync(): JsonObject? {
+        val request = Request.Builder()
+            .url("${getBaseUrl()}/config")
+            .get()
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful) {
+                val body = response.body?.string() ?: return null
+                gson.fromJson(body, JsonObject::class.java)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Update configuration on server
+     */
+    fun updateConfigSync(config: Map<String, Any>): Boolean {
+        val requestBody = gson.toJson(config).toRequestBody(JSON_MEDIA_TYPE)
+
+        val request = Request.Builder()
+            .url("${getBaseUrl()}/config")
+            .post(requestBody)
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            response.isSuccessful
+        } catch (e: Exception) {
+            false
+        }
+    }
 }
 
-// Data classes for API responses
-data class PlanResponse(
-    val plan: ExecutionPlan,
+// HDSP API Response Models
+data class HdspPlanResponse(
+    val plan: HdspExecutionPlan,
     val reasoning: String
 )
 
-data class ExecutionPlan(
-    val steps: List<PlanStep>,
+data class HdspExecutionPlan(
+    val goal: String,
     val totalSteps: Int,
-    val reasoning: String?
+    val steps: List<HdspPlanStep>
 )
 
-data class PlanStep(
+data class HdspPlanStep(
     val stepNumber: Int,
     val description: String,
+    val toolCalls: List<ToolCall>,
+    val expectedOutput: String?
+)
+
+data class ToolCall(
     val tool: String,
-    val targetFile: String?,
-    val dependencies: List<Int>,
-    val estimatedDiffType: String?
+    val parameters: Map<String, Any>
 )
 
-data class ExecuteStepResponse(
-    val success: Boolean,
-    val stepNumber: Int,
-    val diff: DiffResult?,
-    val explanation: String,
-    val requiresUserApproval: Boolean
+data class ErrorInfo(
+    val type: String = "runtime",
+    val message: String,
+    val traceback: List<String> = emptyList()
 )
 
+data class RefineResponse(
+    val toolCalls: List<ToolCall>,
+    val reasoning: String
+)
+
+data class ReplanResponse(
+    val decision: String,  // refine, insert_steps, replace_step, replan_remaining, abort
+    val analysis: Map<String, Any>?,
+    val reasoning: String,
+    val changes: Map<String, Any>?,
+    val usedLlm: Boolean,
+    val confidence: Double
+)
+
+data class VerifyStateResponse(
+    val verified: Boolean,
+    val discrepancies: List<String>,
+    val confidence: Double
+)
+
+// For backward compatibility - will be removed
 data class DiffResult(
     val filePath: String,
     val hunks: List<DiffHunk>,

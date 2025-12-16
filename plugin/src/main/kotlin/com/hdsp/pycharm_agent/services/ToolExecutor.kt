@@ -1,0 +1,376 @@
+package com.hdsp.pycharm_agent.services
+
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.runWriteAction
+import com.intellij.openapi.components.Service
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import java.io.File
+
+/**
+ * Executes HDSP tool calls locally in PyCharm
+ */
+@Service(Service.Level.PROJECT)
+class ToolExecutor(private val project: Project) {
+
+    /**
+     * Execute a tool call and return the result
+     */
+    fun execute(toolCall: ToolCall): ToolExecutionResult {
+        return try {
+            when (toolCall.tool) {
+                "jupyter_cell" -> executeJupyterCell(toolCall.parameters)
+                "read_file" -> executeReadFile(toolCall.parameters)
+                "write_file" -> executeWriteFile(toolCall.parameters)
+                "final_answer" -> executeFinalAnswer(toolCall.parameters)
+                "list_files" -> executeListFiles(toolCall.parameters)
+                "execute_command" -> executeCommand(toolCall.parameters)
+                "search_files" -> executeSearchFiles(toolCall.parameters)
+                else -> ToolExecutionResult(
+                    success = false,
+                    error = ErrorInfo(message = "Unknown tool: ${toolCall.tool}")
+                )
+            }
+        } catch (e: Exception) {
+            ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(
+                    type = e.javaClass.simpleName,
+                    message = e.message ?: "Unknown error",
+                    traceback = e.stackTrace.take(5).map { it.toString() }
+                )
+            )
+        }
+    }
+
+    /**
+     * Convert jupyter_cell to file edit
+     * In PyCharm context, we interpret this as inserting/modifying code in a file
+     */
+    private fun executeJupyterCell(params: Map<String, Any>): ToolExecutionResult {
+        val action = params["action"]?.toString() ?: "CREATE"
+        val code = params["code"]?.toString() ?: params["content"]?.toString() ?: ""
+        val targetFile = params["target_file"]?.toString() ?: params["file"]?.toString()
+
+        if (targetFile == null) {
+            // If no target file specified, return the code as output
+            return ToolExecutionResult(
+                success = true,
+                output = code,
+                codeGenerated = code
+            )
+        }
+
+        val fullPath = resolveFilePath(targetFile)
+        val file = File(fullPath)
+        val existingContent = if (file.exists()) file.readText() else ""
+
+        val newContent = when (action.uppercase()) {
+            "CREATE" -> code
+            "MODIFY", "INSERT_AFTER" -> "$existingContent\n\n$code"
+            "INSERT_BEFORE" -> "$code\n\n$existingContent"
+            else -> code
+        }
+
+        val diff = generateDiff(fullPath, existingContent, newContent)
+        return ToolExecutionResult(
+            success = true,
+            diff = diff,
+            output = "Generated code for $targetFile"
+        )
+    }
+
+    /**
+     * Read file contents
+     */
+    private fun executeReadFile(params: Map<String, Any>): ToolExecutionResult {
+        val filePath = params["path"]?.toString() ?: params["file"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'path' parameter")
+            )
+
+        val fullPath = resolveFilePath(filePath)
+        val file = File(fullPath)
+
+        if (!file.exists()) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "File not found: $filePath")
+            )
+        }
+
+        val content = file.readText()
+        return ToolExecutionResult(
+            success = true,
+            output = content
+        )
+    }
+
+    /**
+     * Write file contents with diff preview
+     */
+    private fun executeWriteFile(params: Map<String, Any>): ToolExecutionResult {
+        val filePath = params["path"]?.toString() ?: params["file"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'path' parameter")
+            )
+
+        val content = params["content"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'content' parameter")
+            )
+
+        val fullPath = resolveFilePath(filePath)
+        val file = File(fullPath)
+        val existingContent = if (file.exists()) file.readText() else ""
+
+        val diff = generateDiff(fullPath, existingContent, content)
+        return ToolExecutionResult(
+            success = true,
+            diff = diff,
+            output = "Will write to $filePath"
+        )
+    }
+
+    /**
+     * Handle final_answer tool - display result to user
+     */
+    private fun executeFinalAnswer(params: Map<String, Any>): ToolExecutionResult {
+        val answer = params["answer"]?.toString() ?: params["content"]?.toString() ?: ""
+        return ToolExecutionResult(
+            success = true,
+            output = answer,
+            isFinalAnswer = true
+        )
+    }
+
+    /**
+     * List files in directory
+     */
+    private fun executeListFiles(params: Map<String, Any>): ToolExecutionResult {
+        val dirPath = params["path"]?.toString() ?: params["directory"]?.toString() ?: "."
+        val pattern = params["pattern"]?.toString() ?: "*"
+
+        val fullPath = resolveFilePath(dirPath)
+        val dir = File(fullPath)
+
+        if (!dir.exists() || !dir.isDirectory) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Directory not found: $dirPath")
+            )
+        }
+
+        val files = if (pattern == "*") {
+            dir.listFiles()?.map { it.name } ?: emptyList()
+        } else {
+            dir.listFiles()?.filter { it.name.matches(Regex(pattern.replace("*", ".*"))) }?.map { it.name }
+                ?: emptyList()
+        }
+
+        return ToolExecutionResult(
+            success = true,
+            output = files.joinToString("\n")
+        )
+    }
+
+    /**
+     * Execute shell command (limited support)
+     */
+    private fun executeCommand(params: Map<String, Any>): ToolExecutionResult {
+        val command = params["command"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'command' parameter")
+            )
+
+        // For security, only allow certain safe commands
+        val safeCommands = listOf("ls", "pwd", "cat", "head", "tail", "wc", "grep", "find", "echo")
+        val firstWord = command.split(" ").firstOrNull()?.trim()
+
+        if (firstWord !in safeCommands) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Command not allowed: $firstWord. Only safe commands are permitted.")
+            )
+        }
+
+        return try {
+            val process = ProcessBuilder("sh", "-c", command)
+                .directory(File(project.basePath ?: "."))
+                .redirectErrorStream(true)
+                .start()
+
+            val output = process.inputStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+
+            if (exitCode == 0) {
+                ToolExecutionResult(success = true, output = output)
+            } else {
+                ToolExecutionResult(
+                    success = false,
+                    error = ErrorInfo(message = "Command failed with exit code $exitCode: $output")
+                )
+            }
+        } catch (e: Exception) {
+            ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Failed to execute command: ${e.message}")
+            )
+        }
+    }
+
+    /**
+     * Search files for content
+     */
+    private fun executeSearchFiles(params: Map<String, Any>): ToolExecutionResult {
+        val pattern = params["pattern"]?.toString() ?: params["query"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'pattern' parameter")
+            )
+
+        val dirPath = params["path"]?.toString() ?: params["directory"]?.toString() ?: "."
+        val fullPath = resolveFilePath(dirPath)
+
+        val results = mutableListOf<String>()
+        val regex = Regex(pattern, RegexOption.IGNORE_CASE)
+
+        File(fullPath).walkTopDown()
+            .filter { it.isFile && !it.path.contains(".git") }
+            .take(100) // Limit files to search
+            .forEach { file ->
+                try {
+                    file.readLines().forEachIndexed { lineNum, line ->
+                        if (regex.containsMatchIn(line)) {
+                            results.add("${file.relativeTo(File(fullPath))}:${lineNum + 1}: $line")
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Skip files that can't be read
+                }
+            }
+
+        return ToolExecutionResult(
+            success = true,
+            output = if (results.isEmpty()) "No matches found" else results.take(50).joinToString("\n")
+        )
+    }
+
+    /**
+     * Resolve file path relative to project root
+     */
+    private fun resolveFilePath(path: String): String {
+        return if (path.startsWith("/")) {
+            path
+        } else {
+            "${project.basePath}/$path"
+        }
+    }
+
+    /**
+     * Generate a diff between old and new content
+     */
+    private fun generateDiff(filePath: String, oldContent: String, newContent: String): DiffResult {
+        val hunks = mutableListOf<DiffHunk>()
+
+        if (oldContent.isEmpty()) {
+            // New file
+            hunks.add(
+                DiffHunk(
+                    startLine = 1,
+                    endLine = newContent.lines().size,
+                    originalContent = "",
+                    newContent = newContent,
+                    changeType = "add"
+                )
+            )
+        } else if (oldContent != newContent) {
+            // Modified file - simple diff
+            hunks.add(
+                DiffHunk(
+                    startLine = 1,
+                    endLine = maxOf(oldContent.lines().size, newContent.lines().size),
+                    originalContent = oldContent,
+                    newContent = newContent,
+                    changeType = "modify"
+                )
+            )
+        }
+
+        val unifiedDiff = buildUnifiedDiff(filePath, oldContent, newContent)
+
+        return DiffResult(
+            filePath = filePath,
+            hunks = hunks,
+            unifiedDiff = unifiedDiff,
+            previewContent = newContent
+        )
+    }
+
+    /**
+     * Build a simple unified diff string
+     */
+    private fun buildUnifiedDiff(filePath: String, oldContent: String, newContent: String): String {
+        val sb = StringBuilder()
+        sb.appendLine("--- a/$filePath")
+        sb.appendLine("+++ b/$filePath")
+
+        val oldLines = oldContent.lines()
+        val newLines = newContent.lines()
+
+        if (oldContent.isEmpty()) {
+            sb.appendLine("@@ -0,0 +1,${newLines.size} @@")
+            newLines.forEach { sb.appendLine("+$it") }
+        } else {
+            sb.appendLine("@@ -1,${oldLines.size} +1,${newLines.size} @@")
+            oldLines.forEach { sb.appendLine("-$it") }
+            newLines.forEach { sb.appendLine("+$it") }
+        }
+
+        return sb.toString()
+    }
+
+    /**
+     * Apply a diff result to the actual file
+     */
+    fun applyDiff(diff: DiffResult): Boolean {
+        return try {
+            val file = File(diff.filePath)
+
+            // Ensure parent directories exist
+            file.parentFile?.mkdirs()
+
+            // Write the new content
+            file.writeText(diff.previewContent)
+
+            // Refresh VFS
+            ApplicationManager.getApplication().invokeLater {
+                LocalFileSystem.getInstance().refreshAndFindFileByPath(diff.filePath)?.let { vf ->
+                    vf.refresh(false, false)
+                }
+            }
+
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+}
+
+/**
+ * Result of a tool execution
+ */
+data class ToolExecutionResult(
+    val success: Boolean,
+    val output: String? = null,
+    val error: ErrorInfo? = null,
+    val diff: DiffResult? = null,
+    val codeGenerated: String? = null,
+    val isFinalAnswer: Boolean = false
+)

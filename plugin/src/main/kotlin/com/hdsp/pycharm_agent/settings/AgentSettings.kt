@@ -31,7 +31,8 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         var vllmApiKey: String = "",
         // Agent behavior
         var autoAcceptDiff: Boolean = false,
-        var showDiffPreview: Boolean = true
+        var showDiffPreview: Boolean = true,
+        var autoExecuteMode: Boolean = false
     )
 
     private var state = State()
@@ -89,6 +90,10 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
     var showDiffPreview: Boolean
         get() = state.showDiffPreview
         set(value) { state.showDiffPreview = value }
+
+    var autoExecuteMode: Boolean
+        get() = state.autoExecuteMode
+        set(value) { state.autoExecuteMode = value }
 
     companion object {
         const val MAX_GEMINI_KEYS = 10
