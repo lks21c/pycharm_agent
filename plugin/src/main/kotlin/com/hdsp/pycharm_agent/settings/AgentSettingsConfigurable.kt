@@ -16,9 +16,11 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.awt.BorderLayout
 import java.awt.CardLayout
+import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.util.concurrent.TimeUnit
+import com.intellij.ui.components.JBTextArea
 import javax.swing.*
 import javax.swing.table.DefaultTableModel
 
@@ -61,6 +63,12 @@ class AgentSettingsConfigurable : Configurable {
 
     // Agent behavior
     private var autoExecuteCheckbox: JCheckBox? = null
+    private var autoApproveCheckbox: JCheckBox? = null
+
+    // Advanced settings
+    private var workspaceRootField: JBTextField? = null
+    private var systemPromptArea: JBTextArea? = null
+    private var idleTimeoutField: JBTextField? = null
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -87,15 +95,23 @@ class AgentSettingsConfigurable : Configurable {
         providerCardsPanel!!.add(createOpenAIPanel(), "openai")
         providerCardsPanel!!.add(createVLLMPanel(), "vllm")
 
-        // Main layout
+        // Advanced settings panel
+        val advancedPanel = createAdvancedPanel()
+
+        // Main layout with vertical split
         val topPanel = JPanel()
         topPanel.layout = BoxLayout(topPanel, BoxLayout.Y_AXIS)
         topPanel.add(backendPanel)
         topPanel.add(Box.createVerticalStrut(JBUI.scale(10)))
         topPanel.add(providerPanel)
 
+        // Center panel with provider cards and advanced settings
+        val centerPanel = JPanel(BorderLayout(0, JBUI.scale(10)))
+        centerPanel.add(providerCardsPanel!!, BorderLayout.CENTER)
+        centerPanel.add(advancedPanel, BorderLayout.SOUTH)
+
         mainPanel!!.add(topPanel, BorderLayout.NORTH)
-        mainPanel!!.add(providerCardsPanel!!, BorderLayout.CENTER)
+        mainPanel!!.add(centerPanel, BorderLayout.CENTER)
 
         // Set initial provider card
         providerCombo?.addActionListener {
@@ -124,9 +140,19 @@ class AgentSettingsConfigurable : Configurable {
 
         // Agent behavior options
         autoExecuteCheckbox = JCheckBox("Auto-execute mode (execute all steps automatically)")
+        autoApproveCheckbox = JCheckBox("Auto-approve tool execution (HITL bypass)")
 
-        val optionsPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-            add(autoExecuteCheckbox)
+        val optionsPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+
+            val row1 = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+                add(autoExecuteCheckbox)
+            }
+            val row2 = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+                add(autoApproveCheckbox)
+            }
+            add(row1)
+            add(row2)
         }
 
         val mainPanel = JPanel()
@@ -287,6 +313,56 @@ class AgentSettingsConfigurable : Configurable {
         panel.add(keyPanel)
         panel.add(buttonPanel)
         panel.add(Box.createVerticalGlue())
+
+        return panel
+    }
+
+    private fun createAdvancedPanel(): JPanel {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        panel.border = BorderFactory.createTitledBorder("Advanced Settings")
+
+        // Workspace Root
+        val workspacePanel = JPanel(BorderLayout(JBUI.scale(5), 0)).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, 30)
+        }
+        workspacePanel.add(JBLabel("Workspace Root (empty = project root):"), BorderLayout.WEST)
+        workspaceRootField = JBTextField().apply {
+            emptyText.text = "/path/to/workspace"
+        }
+        workspacePanel.add(workspaceRootField!!, BorderLayout.CENTER)
+
+        // Idle Timeout
+        val timeoutPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        timeoutPanel.add(JBLabel("Idle Timeout (minutes, 0=disabled):"))
+        idleTimeoutField = JBTextField(5).apply {
+            text = "60"
+        }
+        timeoutPanel.add(idleTimeoutField!!)
+
+        // System Prompt
+        val promptPanel = JPanel(BorderLayout()).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.emptyTop(5)
+        }
+        promptPanel.add(JBLabel("System Prompt (LangChain Agent):"), BorderLayout.NORTH)
+        systemPromptArea = JBTextArea(4, 40).apply {
+            lineWrap = true
+            wrapStyleWord = true
+        }
+        val scrollPane = JBScrollPane(systemPromptArea).apply {
+            preferredSize = Dimension(400, 100)
+        }
+        promptPanel.add(scrollPane, BorderLayout.CENTER)
+
+        panel.add(workspacePanel)
+        panel.add(Box.createVerticalStrut(JBUI.scale(5)))
+        panel.add(timeoutPanel)
+        panel.add(Box.createVerticalStrut(JBUI.scale(5)))
+        panel.add(promptPanel)
 
         return panel
     }
@@ -515,12 +591,16 @@ class AgentSettingsConfigurable : Configurable {
                 vllmEndpointField?.text != settings.vllmEndpoint ||
                 vllmModelField?.text != settings.vllmModel ||
                 String(vllmApiKeyField?.password ?: charArrayOf()) != settings.vllmApiKey ||
-                autoExecuteCheckbox?.isSelected != settings.autoExecuteMode
+                autoExecuteCheckbox?.isSelected != settings.autoExecuteMode ||
+                autoApproveCheckbox?.isSelected != settings.autoApprove ||
+                workspaceRootField?.text != settings.workspaceRoot ||
+                systemPromptArea?.text != settings.systemPrompt ||
+                (idleTimeoutField?.text?.toIntOrNull() ?: 60) != settings.idleTimeoutMinutes
     }
 
     override fun apply() {
         val settings = AgentSettings.getInstance()
-        settings.backendUrl = backendUrlField?.text ?: "http://localhost:8888"
+        settings.backendUrl = backendUrlField?.text ?: "http://localhost:8000"
         settings.provider = providerCombo?.selectedItem as? String ?: "gemini"
         settings.geminiModel = geminiModelCombo?.selectedItem as? String ?: "gemini-2.5-flash"
         settings.openaiApiKey = String(openaiApiKeyField?.password ?: charArrayOf())
@@ -529,6 +609,10 @@ class AgentSettingsConfigurable : Configurable {
         settings.vllmModel = vllmModelField?.text ?: ""
         settings.vllmApiKey = String(vllmApiKeyField?.password ?: charArrayOf())
         settings.autoExecuteMode = autoExecuteCheckbox?.isSelected ?: false
+        settings.autoApprove = autoApproveCheckbox?.isSelected ?: false
+        settings.workspaceRoot = workspaceRootField?.text ?: ""
+        settings.systemPrompt = systemPromptArea?.text ?: ""
+        settings.idleTimeoutMinutes = idleTimeoutField?.text?.toIntOrNull() ?: 60
 
         // Sync to backend
         syncToBackend()
@@ -541,6 +625,7 @@ class AgentSettingsConfigurable : Configurable {
         providerCombo?.selectedItem = settings.provider
         providerCardLayout?.show(providerCardsPanel, settings.provider)
         autoExecuteCheckbox?.isSelected = settings.autoExecuteMode
+        autoApproveCheckbox?.isSelected = settings.autoApprove
 
         // Gemini
         geminiModelCombo?.selectedItem = settings.geminiModel
@@ -558,6 +643,11 @@ class AgentSettingsConfigurable : Configurable {
         vllmEndpointField?.text = settings.vllmEndpoint
         vllmModelField?.text = settings.vllmModel
         vllmApiKeyField?.text = settings.vllmApiKey
+
+        // Advanced settings
+        workspaceRootField?.text = settings.workspaceRoot
+        systemPromptArea?.text = settings.systemPrompt
+        idleTimeoutField?.text = settings.idleTimeoutMinutes.toString()
     }
 
     override fun disposeUIResources() {
@@ -582,5 +672,9 @@ class AgentSettingsConfigurable : Configurable {
         vllmApiKeyField = null
         testVllmButton = null
         autoExecuteCheckbox = null
+        autoApproveCheckbox = null
+        workspaceRootField = null
+        systemPromptArea = null
+        idleTimeoutField = null
     }
 }

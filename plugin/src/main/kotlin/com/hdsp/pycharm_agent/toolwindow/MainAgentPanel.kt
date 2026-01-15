@@ -6,6 +6,7 @@ import com.hdsp.pycharm_agent.settings.AgentSettingsConfigurable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
@@ -393,7 +394,7 @@ class MessagePanel(
 }
 
 /**
- * Agent mode panel - plan execution with diff preview (HDSP Agent Server integration)
+ * Agent mode panel - LangChain agent with HITL support (HDSP Agent Server integration)
  */
 class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 
@@ -401,21 +402,38 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         lineWrap = true
         wrapStyleWord = true
     }
-    private val generatePlanButton = JButton("Generate Plan")
-    private val stepsPanel = JPanel().apply {
+    private val sendButton = JButton("Send")
+    private val stopButton = JButton("Stop").apply { isEnabled = false }
+
+    // Response area (streaming)
+    private val responseArea = JBTextArea().apply {
+        isEditable = false
+        lineWrap = true
+        wrapStyleWord = true
+    }
+
+    // Todo list panel
+    private val todosPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         border = JBUI.Borders.empty(5)
     }
-    private val statusLabel = JLabel(" ")
-    private val executeNextButton = JButton("Execute Next Step")
-    private val executeAllButton = JButton("Execute All")
-    private val acceptButton = JButton("✓ Accept")
-    private val rejectButton = JButton("✗ Reject")
 
-    private var currentPlan: HdspPlanResponse? = null
-    private var currentStepIndex = 0
-    private var pendingDiff: DiffResult? = null
-    private val stepPanels = mutableListOf<HdspStepPanel>()
+    // Debug/Status panel
+    private val debugLabel = JLabel(" ").apply {
+        font = font.deriveFont(Font.ITALIC, 11f)
+        foreground = JBColor.gray
+    }
+
+    // Key rotation indicator
+    private val keyStatusLabel = JLabel(" ").apply {
+        font = font.deriveFont(10f)
+        foreground = JBColor(Color(100, 150, 100), Color(150, 200, 150))
+    }
+
+    // State
+    private var currentThreadId: String? = null
+    private var pendingInterrupt: AgentInterrupt? = null
+    private var isRunning = false
 
     init {
         // Request input panel
@@ -425,413 +443,350 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
             add(JBScrollPane(requestArea).apply {
                 preferredSize = Dimension(400, 80)
             }, BorderLayout.CENTER)
-            add(generatePlanButton, BorderLayout.SOUTH)
+
+            val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT)).apply {
+                add(sendButton)
+                add(stopButton)
+            }
+            add(buttonPanel, BorderLayout.SOUTH)
         }
         add(requestPanel, BorderLayout.NORTH)
 
-        // Steps display panel
-        val stepsScrollPane = JBScrollPane(stepsPanel).apply {
-            border = BorderFactory.createTitledBorder("Execution Plan")
+        // Main content split - Response on top, Todos at bottom
+        val contentPanel = JPanel(BorderLayout())
+
+        // Response area with scroll
+        val responseScrollPane = JBScrollPane(responseArea).apply {
+            border = BorderFactory.createTitledBorder("Response")
+            preferredSize = Dimension(400, 200)
         }
-        add(stepsScrollPane, BorderLayout.CENTER)
+        contentPanel.add(responseScrollPane, BorderLayout.CENTER)
 
-        // Control panel at bottom
-        val controlPanel = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(5)
-
-            add(statusLabel, BorderLayout.NORTH)
-
-            val buttonsPanel = JPanel(FlowLayout(FlowLayout.CENTER, 10, 5)).apply {
-                add(executeNextButton)
-                add(executeAllButton)
-                add(acceptButton)
-                add(rejectButton)
-            }
-            add(buttonsPanel, BorderLayout.CENTER)
+        // Todos panel with scroll
+        val todosScrollPane = JBScrollPane(todosPanel).apply {
+            border = BorderFactory.createTitledBorder("Todos")
+            preferredSize = Dimension(400, 150)
         }
-        add(controlPanel, BorderLayout.SOUTH)
+        contentPanel.add(todosScrollPane, BorderLayout.SOUTH)
 
-        // Initial button states
-        executeNextButton.isEnabled = false
-        executeAllButton.isEnabled = false
-        acceptButton.isEnabled = false
-        rejectButton.isEnabled = false
+        add(contentPanel, BorderLayout.CENTER)
+
+        // Status bar at bottom
+        val statusBar = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(3, 5)
+            background = JBColor(Color(245, 245, 245), Color(45, 45, 45))
+
+            add(debugLabel, BorderLayout.WEST)
+            add(keyStatusLabel, BorderLayout.EAST)
+        }
+        add(statusBar, BorderLayout.SOUTH)
 
         // Event handlers
-        generatePlanButton.addActionListener { generatePlan() }
-        executeNextButton.addActionListener { executeNextStep() }
-        executeAllButton.addActionListener { executeAllSteps() }
-        acceptButton.addActionListener { acceptDiff() }
-        rejectButton.addActionListener { rejectDiff() }
+        sendButton.addActionListener { sendRequest() }
+        stopButton.addActionListener { stopAgent() }
+        requestArea.addKeyListener(object : KeyAdapter() {
+            override fun keyPressed(e: KeyEvent) {
+                if (e.keyCode == KeyEvent.VK_ENTER && e.isControlDown) {
+                    sendRequest()
+                    e.consume()
+                }
+            }
+        })
     }
 
-    private fun generatePlan() {
+    private fun sendRequest() {
         val request = requestArea.text.trim()
         if (request.isEmpty()) return
 
-        generatePlanButton.isEnabled = false
-        statusLabel.text = "Generating plan..."
-        stepsPanel.removeAll()
-        stepPanels.clear()
-        currentStepIndex = 0
-        pendingDiff = null
+        sendButton.isEnabled = false
+        stopButton.isEnabled = true
+        isRunning = true
+        responseArea.text = ""
+        todosPanel.removeAll()
+        todosPanel.revalidate()
+        debugLabel.text = "Starting agent..."
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 val client = project.getService(BackendClient::class.java)
-                val plan = client.generatePlanSync(request)
-                currentPlan = plan
+                val responseBuilder = StringBuilder()
 
+                client.streamAgentSync(
+                    request = request,
+                    threadId = currentThreadId,
+                    notebookContext = null,
+                    onChunk = { chunk ->
+                        responseBuilder.append(chunk)
+                        SwingUtilities.invokeLater {
+                            responseArea.text = responseBuilder.toString()
+                            responseArea.caretPosition = responseArea.document.length
+                        }
+                    },
+                    onDebug = { status ->
+                        SwingUtilities.invokeLater {
+                            debugLabel.text = if (status.isEmpty()) " " else status
+                        }
+                    },
+                    onInterrupt = { interrupt ->
+                        SwingUtilities.invokeLater {
+                            handleInterrupt(interrupt)
+                        }
+                    },
+                    onTodos = { todos ->
+                        SwingUtilities.invokeLater {
+                            updateTodos(todos)
+                        }
+                    },
+                    onToolCall = { toolCall ->
+                        SwingUtilities.invokeLater {
+                            debugLabel.text = "🔧 ${toolCall.tool}"
+                        }
+                    },
+                    onComplete = { threadId ->
+                        currentThreadId = threadId
+                        SwingUtilities.invokeLater {
+                            debugLabel.text = "Complete"
+                            finishAgent()
+                        }
+                    },
+                    onKeyRotation = { keyIndex, totalKeys ->
+                        SwingUtilities.invokeLater {
+                            keyStatusLabel.text = "Key ${keyIndex + 1}/$totalKeys"
+                        }
+                    }
+                )
+            } catch (e: AllKeysRateLimitedException) {
                 SwingUtilities.invokeLater {
-                    displayPlan(plan)
-                    statusLabel.text = "Plan generated. Click 'Execute Next Step' to begin."
-                    executeNextButton.isEnabled = plan.plan.steps.isNotEmpty()
-                    executeAllButton.isEnabled = plan.plan.steps.isNotEmpty() && AgentSettings.getInstance().autoExecuteMode
-                    generatePlanButton.isEnabled = true
+                    debugLabel.text = "⚠️ All API keys rate limited"
+                    responseArea.append("\n\n[Error: All API keys are rate limited. Please wait and try again.]")
+                    finishAgent()
                 }
             } catch (e: Exception) {
                 SwingUtilities.invokeLater {
-                    statusLabel.text = "Error: ${e.message}"
-                    generatePlanButton.isEnabled = true
+                    debugLabel.text = "Error: ${e.message}"
+                    responseArea.append("\n\n[Error: ${e.message}]")
+                    finishAgent()
                 }
             }
         }
     }
 
-    private fun displayPlan(plan: HdspPlanResponse) {
-        stepsPanel.removeAll()
-        stepPanels.clear()
+    private fun handleInterrupt(interrupt: AgentInterrupt) {
+        pendingInterrupt = interrupt
+        currentThreadId = interrupt.threadId
 
-        // Reasoning section
-        val reasoningPanel = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(5)
-            val reasoningArea = JBTextArea(plan.reasoning).apply {
-                isEditable = false
-                lineWrap = true
-                wrapStyleWord = true
-                background = JBColor(Color(255, 255, 230), Color(60, 60, 40))
-                border = JBUI.Borders.empty(5)
-            }
-            add(JLabel("Reasoning:").apply { font = font.deriveFont(Font.BOLD) }, BorderLayout.NORTH)
-            add(reasoningArea, BorderLayout.CENTER)
-            alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, 100)
-        }
-        stepsPanel.add(reasoningPanel)
-        stepsPanel.add(Box.createVerticalStrut(10))
+        debugLabel.text = "⏸️ Waiting for approval: ${interrupt.action}"
 
-        // Goal
-        val goalPanel = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(5)
-            add(JLabel("<html><b>Goal:</b> ${plan.plan.goal}</html>"), BorderLayout.CENTER)
-            alignmentX = Component.LEFT_ALIGNMENT
-        }
-        stepsPanel.add(goalPanel)
-        stepsPanel.add(Box.createVerticalStrut(10))
-
-        // Steps
-        plan.plan.steps.forEachIndexed { index, step ->
-            val stepPanel = HdspStepPanel(index, step)
-            stepPanels.add(stepPanel)
-            stepsPanel.add(stepPanel)
-            stepsPanel.add(Box.createVerticalStrut(5))
-        }
-
-        stepsPanel.add(Box.createVerticalGlue())
-        stepsPanel.revalidate()
-        stepsPanel.repaint()
+        // Show HITL dialog
+        val dialog = HITLDialog(
+            project = project,
+            interrupt = interrupt,
+            onApprove = { resumeAgent("approve", null, null) },
+            onEdit = { modifiedArgs -> resumeAgent("edit", modifiedArgs, null) },
+            onReject = { feedback -> resumeAgent("reject", null, feedback) }
+        )
+        dialog.show()
     }
 
-    private fun executeNextStep() {
-        val plan = currentPlan ?: return
-        if (currentStepIndex >= plan.plan.steps.size) {
-            statusLabel.text = "All steps completed!"
-            executeNextButton.isEnabled = false
-            executeAllButton.isEnabled = false
-            return
-        }
+    private fun resumeAgent(decision: String, args: Map<String, Any>?, feedback: String?) {
+        val threadId = currentThreadId ?: return
+        pendingInterrupt = null
 
-        val step = plan.plan.steps[currentStepIndex]
-        stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.IN_PROGRESS)
-        executeNextButton.isEnabled = false
-        executeAllButton.isEnabled = false
-        statusLabel.text = "Executing step ${currentStepIndex + 1}..."
+        debugLabel.text = "Resuming with decision: $decision"
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val toolExecutor = project.getService(ToolExecutor::class.java)
-                var lastDiff: DiffResult? = null
+                val client = project.getService(BackendClient::class.java)
+                val responseBuilder = StringBuilder(responseArea.text)
 
-                // Execute all tool calls in the step
-                for (toolCall in step.toolCalls) {
-                    val result = toolExecutor.execute(toolCall)
-
-                    if (!result.success) {
+                client.resumeAgentSync(
+                    threadId = threadId,
+                    decision = decision,
+                    args = args,
+                    feedback = feedback,
+                    onChunk = { chunk ->
+                        responseBuilder.append(chunk)
                         SwingUtilities.invokeLater {
-                            statusLabel.text = "Error: ${result.error?.message}"
-                            stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.ERROR)
-                            executeNextButton.isEnabled = true
+                            responseArea.text = responseBuilder.toString()
+                            responseArea.caretPosition = responseArea.document.length
                         }
-                        return@executeOnPooledThread
-                    }
-
-                    // Keep track of the last diff
-                    if (result.diff != null) {
-                        lastDiff = result.diff
-                    }
-
-                    // Handle final answer
-                    if (result.isFinalAnswer) {
+                    },
+                    onDebug = { status ->
                         SwingUtilities.invokeLater {
-                            stepPanels.getOrNull(currentStepIndex)?.showOutput(result.output ?: "")
+                            debugLabel.text = if (status.isEmpty()) " " else status
+                        }
+                    },
+                    onInterrupt = { interrupt ->
+                        SwingUtilities.invokeLater {
+                            handleInterrupt(interrupt)
+                        }
+                    },
+                    onTodos = { todos ->
+                        SwingUtilities.invokeLater {
+                            updateTodos(todos)
+                        }
+                    },
+                    onToolCall = { toolCall ->
+                        SwingUtilities.invokeLater {
+                            debugLabel.text = "🔧 ${toolCall.tool}"
+                        }
+                    },
+                    onComplete = { newThreadId ->
+                        currentThreadId = newThreadId
+                        SwingUtilities.invokeLater {
+                            debugLabel.text = "Complete"
+                            finishAgent()
+                        }
+                    },
+                    onKeyRotation = { keyIndex, totalKeys ->
+                        SwingUtilities.invokeLater {
+                            keyStatusLabel.text = "Key ${keyIndex + 1}/$totalKeys"
                         }
                     }
-                }
-
-                SwingUtilities.invokeLater {
-                    if (lastDiff != null) {
-                        pendingDiff = lastDiff
-                        stepPanels.getOrNull(currentStepIndex)?.showDiff(lastDiff)
-
-                        // Show diff preview in editor with highlighting
-                        if (lastDiff.filePath.isNotEmpty()) {
-                            val diffService = project.getService(DiffApplicationService::class.java)
-                            diffService.showDiffPreviewInEditor(lastDiff)
-                        }
-
-                        statusLabel.text = "Review the diff. Accept (Tab) or Reject (Esc)"
-                        acceptButton.isEnabled = true
-                        rejectButton.isEnabled = true
-                    } else {
-                        // No diff, step completed
-                        stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.COMPLETED)
-                        currentStepIndex++
-                        statusLabel.text = "Step completed."
-                        executeNextButton.isEnabled = currentStepIndex < plan.plan.steps.size
-                        executeAllButton.isEnabled = currentStepIndex < plan.plan.steps.size && AgentSettings.getInstance().autoExecuteMode
-
-                        if (currentStepIndex >= plan.plan.steps.size) {
-                            statusLabel.text = "All steps completed!"
-                        }
-                    }
-                }
+                )
             } catch (e: Exception) {
                 SwingUtilities.invokeLater {
-                    statusLabel.text = "Error: ${e.message}"
-                    stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.ERROR)
-                    executeNextButton.isEnabled = true
+                    debugLabel.text = "Resume error: ${e.message}"
+                    finishAgent()
                 }
             }
         }
     }
 
-    private fun executeAllSteps() {
-        // Auto-execute mode: execute all steps automatically
-        val plan = currentPlan ?: return
-        if (!AgentSettings.getInstance().autoExecuteMode) {
-            statusLabel.text = "Auto-execute mode is disabled. Enable in settings."
-            return
+    private fun updateTodos(todos: List<TodoItem>) {
+        todosPanel.removeAll()
+
+        for (todo in todos) {
+            val statusIcon = when (todo.status) {
+                "completed" -> "✅"
+                "in_progress" -> "🔄"
+                else -> "⏳"
+            }
+            val todoLabel = JLabel("$statusIcon ${todo.content}").apply {
+                border = JBUI.Borders.empty(2, 5)
+                foreground = when (todo.status) {
+                    "completed" -> JBColor(Color(0, 150, 0), Color(100, 200, 100))
+                    "in_progress" -> JBColor.blue
+                    else -> JBColor.gray
+                }
+            }
+            todosPanel.add(todoLabel)
         }
 
-        executeAllButton.isEnabled = false
-        executeNextButton.isEnabled = false
-
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val toolExecutor = project.getService(ToolExecutor::class.java)
-
-            while (currentStepIndex < plan.plan.steps.size) {
-                val step = plan.plan.steps[currentStepIndex]
-
-                SwingUtilities.invokeLater {
-                    stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.IN_PROGRESS)
-                    statusLabel.text = "Executing step ${currentStepIndex + 1}..."
-                }
-
-                var stepSuccess = true
-                for (toolCall in step.toolCalls) {
-                    val result = toolExecutor.execute(toolCall)
-
-                    if (!result.success) {
-                        SwingUtilities.invokeLater {
-                            statusLabel.text = "Error at step ${currentStepIndex + 1}: ${result.error?.message}"
-                            stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.ERROR)
-                        }
-                        stepSuccess = false
-                        break
-                    }
-
-                    // Auto-apply diffs in auto-execute mode
-                    if (result.diff != null) {
-                        toolExecutor.applyDiff(result.diff)
-                    }
-                }
-
-                if (!stepSuccess) break
-
-                SwingUtilities.invokeLater {
-                    stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.COMPLETED)
-                }
-
-                currentStepIndex++
-            }
-
-            SwingUtilities.invokeLater {
-                if (currentStepIndex >= plan.plan.steps.size) {
-                    statusLabel.text = "All steps completed!"
-                }
-                executeNextButton.isEnabled = currentStepIndex < plan.plan.steps.size
-            }
-        }
+        todosPanel.add(Box.createVerticalGlue())
+        todosPanel.revalidate()
+        todosPanel.repaint()
     }
 
-    private fun acceptDiff() {
-        val diff = pendingDiff ?: return
-        acceptButton.isEnabled = false
-        rejectButton.isEnabled = false
-
-        // Apply the diff using ToolExecutor
-        val toolExecutor = project.getService(ToolExecutor::class.java)
-        val success = toolExecutor.applyDiff(diff)
-
-        if (success) {
-            stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.COMPLETED)
-            statusLabel.text = "Step ${currentStepIndex + 1} applied successfully."
-        } else {
-            stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.ERROR)
-            statusLabel.text = "Failed to apply diff."
-        }
-
-        pendingDiff = null
-        currentStepIndex++
-        executeNextButton.isEnabled = currentStepIndex < (currentPlan?.plan?.steps?.size ?: 0)
-        executeAllButton.isEnabled = currentStepIndex < (currentPlan?.plan?.steps?.size ?: 0) && AgentSettings.getInstance().autoExecuteMode
-
-        if (currentStepIndex >= (currentPlan?.plan?.steps?.size ?: 0)) {
-            statusLabel.text = "All steps completed!"
-        }
+    private fun stopAgent() {
+        isRunning = false
+        finishAgent()
     }
 
-    private fun rejectDiff() {
-        pendingDiff = null
-        acceptButton.isEnabled = false
-        rejectButton.isEnabled = false
-
-        stepPanels.getOrNull(currentStepIndex)?.setStatus(StepStatus.REJECTED)
-        statusLabel.text = "Step ${currentStepIndex + 1} rejected. Click 'Execute Next Step' to retry or skip."
-        executeNextButton.isEnabled = true
+    private fun finishAgent() {
+        isRunning = false
+        sendButton.isEnabled = true
+        stopButton.isEnabled = false
     }
 }
 
-enum class StepStatus { PENDING, IN_PROGRESS, COMPLETED, REJECTED, ERROR }
-
 /**
- * Individual step panel for HDSP plan steps
+ * HITL (Human-in-the-Loop) Dialog for agent interrupts
  */
-class HdspStepPanel(
-    private val index: Int,
-    private val step: HdspPlanStep
-) : JPanel(BorderLayout()) {
+class HITLDialog(
+    private val project: Project,
+    private val interrupt: AgentInterrupt,
+    private val onApprove: () -> Unit,
+    private val onEdit: (Map<String, Any>) -> Unit,
+    private val onReject: (String) -> Unit
+) : DialogWrapper(project, true) {
 
-    private val statusIcon = JLabel("○")
-    private val outputArea = JBTextArea().apply {
-        isEditable = false
-        font = Font("JetBrains Mono", Font.PLAIN, 11).let { f ->
-            if (f.family == "JetBrains Mono") f else Font(Font.MONOSPACED, Font.PLAIN, 11)
-        }
-        isVisible = false
-        background = JBColor(Color(40, 44, 52), Color(30, 30, 30))
-        foreground = JBColor(Color(200, 200, 200), Color(200, 200, 200))
+    private val feedbackArea = JBTextArea(3, 40).apply {
+        lineWrap = true
+        wrapStyleWord = true
     }
 
     init {
-        border = JBUI.Borders.empty(3, 5)
-        alignmentX = Component.LEFT_ALIGNMENT
-        maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+        title = "Agent Requires Approval"
+        init()
+    }
 
-        // Header with status and description
-        val headerPanel = JPanel(BorderLayout()).apply {
-            isOpaque = false
+    override fun createCenterPanel(): JComponent {
+        val panel = JPanel(BorderLayout(0, JBUI.scale(10)))
+        panel.preferredSize = Dimension(500, 350)
 
-            statusIcon.font = Font(Font.MONOSPACED, Font.PLAIN, 14)
-            statusIcon.border = JBUI.Borders.emptyRight(8)
-            add(statusIcon, BorderLayout.WEST)
+        // Action description
+        val actionPanel = JPanel(BorderLayout()).apply {
+            border = BorderFactory.createTitledBorder("Requested Action")
 
-            val descLabel = JLabel("<html><b>Step ${index + 1}:</b> ${step.description}</html>")
-            add(descLabel, BorderLayout.CENTER)
-        }
-        add(headerPanel, BorderLayout.NORTH)
+            val actionLabel = JLabel("<html><b>${interrupt.action}</b></html>")
+            add(actionLabel, BorderLayout.NORTH)
 
-        // Details - tool calls
-        val detailsPanel = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            border = JBUI.Borders.emptyLeft(25)
-
-            step.toolCalls.forEach { toolCall ->
-                val toolLabel = JLabel("🔧 ${toolCall.tool}").apply {
-                    font = font.deriveFont(Font.ITALIC, 11f)
-                    foreground = JBColor.gray
+            if (interrupt.description.isNotEmpty()) {
+                val descArea = JBTextArea(interrupt.description).apply {
+                    isEditable = false
+                    lineWrap = true
+                    wrapStyleWord = true
+                    background = JBColor(Color(250, 250, 250), Color(50, 50, 50))
+                    border = JBUI.Borders.empty(5)
                 }
-                add(toolLabel)
+                add(JBScrollPane(descArea), BorderLayout.CENTER)
             }
+        }
+        panel.add(actionPanel, BorderLayout.NORTH)
 
-            step.expectedOutput?.let { expected ->
-                val expectedLabel = JLabel("Expected: $expected").apply {
-                    font = font.deriveFont(Font.ITALIC, 10f)
-                    foreground = JBColor(Color(100, 100, 150), Color(150, 150, 200))
+        // Arguments preview
+        if (interrupt.args.isNotEmpty()) {
+            val argsPanel = JPanel(BorderLayout()).apply {
+                border = BorderFactory.createTitledBorder("Arguments")
+
+                val argsText = interrupt.args.entries.joinToString("\n") { (k, v) ->
+                    "$k: $v"
                 }
-                add(expectedLabel)
+                val argsArea = JBTextArea(argsText).apply {
+                    isEditable = false
+                    font = Font("JetBrains Mono", Font.PLAIN, 11).let { f ->
+                        if (f.family == "JetBrains Mono") f else Font(Font.MONOSPACED, Font.PLAIN, 11)
+                    }
+                    background = JBColor(Color(40, 44, 52), Color(30, 30, 30))
+                    foreground = JBColor(Color(200, 200, 200), Color(200, 200, 200))
+                    border = JBUI.Borders.empty(5)
+                }
+                add(JBScrollPane(argsArea).apply {
+                    preferredSize = Dimension(450, 120)
+                }, BorderLayout.CENTER)
             }
+            panel.add(argsPanel, BorderLayout.CENTER)
         }
-        add(detailsPanel, BorderLayout.CENTER)
 
-        // Output area (initially hidden)
-        val outputScrollPane = JBScrollPane(outputArea).apply {
-            preferredSize = Dimension(400, 150)
-            border = JBUI.Borders.empty(5, 25, 0, 0)
-            isVisible = false
+        // Feedback area (for rejection)
+        val feedbackPanel = JPanel(BorderLayout()).apply {
+            border = BorderFactory.createTitledBorder("Feedback (optional, for rejection)")
+            add(JBScrollPane(feedbackArea).apply {
+                preferredSize = Dimension(450, 80)
+            }, BorderLayout.CENTER)
         }
-        add(outputScrollPane, BorderLayout.SOUTH)
+        panel.add(feedbackPanel, BorderLayout.SOUTH)
+
+        return panel
     }
 
-    fun setStatus(status: StepStatus) {
-        when (status) {
-            StepStatus.PENDING -> {
-                statusIcon.text = "○"
-                statusIcon.foreground = JBColor.gray
-            }
-            StepStatus.IN_PROGRESS -> {
-                statusIcon.text = "→"
-                statusIcon.foreground = JBColor.blue
-            }
-            StepStatus.COMPLETED -> {
-                statusIcon.text = "✓"
-                statusIcon.foreground = JBColor(Color(0, 150, 0), Color(100, 200, 100))
-            }
-            StepStatus.REJECTED -> {
-                statusIcon.text = "✗"
-                statusIcon.foreground = JBColor.orange
-            }
-            StepStatus.ERROR -> {
-                statusIcon.text = "!"
-                statusIcon.foreground = JBColor.red
-            }
-        }
-    }
-
-    fun showDiff(diff: DiffResult) {
-        outputArea.text = diff.unifiedDiff
-        outputArea.isVisible = true
-        (outputArea.parent as? JComponent)?.isVisible = true
-        revalidate()
-        repaint()
-    }
-
-    fun showOutput(output: String) {
-        outputArea.text = output
-        outputArea.isVisible = true
-        (outputArea.parent as? JComponent)?.isVisible = true
-        revalidate()
-        repaint()
+    override fun createActions(): Array<Action> {
+        return arrayOf(
+            object : DialogWrapperAction("Approve") {
+                override fun doAction(e: java.awt.event.ActionEvent?) {
+                    onApprove()
+                    close(OK_EXIT_CODE)
+                }
+            },
+            object : DialogWrapperAction("Reject") {
+                override fun doAction(e: java.awt.event.ActionEvent?) {
+                    onReject(feedbackArea.text)
+                    close(CANCEL_EXIT_CODE)
+                }
+            },
+            cancelAction
+        )
     }
 }
+

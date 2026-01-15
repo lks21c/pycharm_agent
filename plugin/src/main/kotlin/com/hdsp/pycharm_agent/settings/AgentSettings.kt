@@ -29,13 +29,27 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
         var vllmEndpoint: String = "http://localhost:8000",
         var vllmModel: String = "meta-llama/Llama-2-7b-chat-hf",
         var vllmApiKey: String = "",
+        // Workspace & Context
+        var workspaceRoot: String = "",  // Empty means use project root
         // Agent behavior
+        var autoApprove: Boolean = false,  // Auto-approve tool execution
         var autoAcceptDiff: Boolean = false,
         var showDiffPreview: Boolean = true,
-        var autoExecuteMode: Boolean = false
+        var autoExecuteMode: Boolean = false,
+        // LangChain System Prompt
+        var systemPrompt: String = "",
+        // Idle Timeout (minutes, 0=disabled)
+        var idleTimeoutMinutes: Int = 60
     )
 
     private var state = State()
+
+    // API Key Rotation State (runtime only, not persisted)
+    @Transient
+    private var currentKeyIndex: Int = 0
+
+    @Transient
+    private val rateLimitedKeys: MutableSet<Int> = mutableSetOf()
 
     override fun getState(): State = state
 
@@ -94,6 +108,88 @@ class AgentSettings : PersistentStateComponent<AgentSettings.State> {
     var autoExecuteMode: Boolean
         get() = state.autoExecuteMode
         set(value) { state.autoExecuteMode = value }
+
+    // Workspace & Context
+    var workspaceRoot: String
+        get() = state.workspaceRoot
+        set(value) { state.workspaceRoot = value }
+
+    // Auto-approve tool execution
+    var autoApprove: Boolean
+        get() = state.autoApprove
+        set(value) { state.autoApprove = value }
+
+    // LangChain System Prompt
+    var systemPrompt: String
+        get() = state.systemPrompt
+        set(value) { state.systemPrompt = value }
+
+    // Idle Timeout
+    var idleTimeoutMinutes: Int
+        get() = state.idleTimeoutMinutes
+        set(value) { state.idleTimeoutMinutes = value }
+
+    // ═══════════════════════════════════════════════════════════════
+    // API Key Rotation Methods
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Get current active Gemini API key for rotation
+     *
+     * Rate Limit handling:
+     * 1. Call markKeyAsRateLimited(currentIndex) when 429 occurs
+     * 2. Call getNextValidKey() to get next available key
+     * 3. Returns null when all keys are exhausted
+     */
+    fun getCurrentGeminiKey(): String? {
+        val keys = geminiApiKeys.filter { it.isNotBlank() }
+        if (keys.isEmpty()) return null
+        if (currentKeyIndex >= keys.size) currentKeyIndex = 0
+        return keys.getOrNull(currentKeyIndex)
+    }
+
+    /**
+     * Mark a key as rate limited by its index
+     */
+    fun markKeyAsRateLimited(index: Int) {
+        rateLimitedKeys.add(index)
+    }
+
+    /**
+     * Get next non-rate-limited key
+     * Returns null if all keys are rate limited
+     */
+    fun getNextValidKey(): String? {
+        val keys = geminiApiKeys.filter { it.isNotBlank() }
+        if (keys.isEmpty()) return null
+
+        for (i in keys.indices) {
+            val nextIndex = (currentKeyIndex + i + 1) % keys.size
+            if (nextIndex !in rateLimitedKeys) {
+                currentKeyIndex = nextIndex
+                return keys[nextIndex]
+            }
+        }
+        return null // All keys rate limited
+    }
+
+    /**
+     * Reset rotation state after successful request
+     */
+    fun resetKeyRotation() {
+        currentKeyIndex = 0
+        rateLimitedKeys.clear()
+    }
+
+    /**
+     * Get count of valid (non-blank) API keys
+     */
+    fun getValidKeyCount(): Int = geminiApiKeys.count { it.isNotBlank() }
+
+    /**
+     * Get current key index for UI updates
+     */
+    fun getCurrentKeyIndex(): Int = currentKeyIndex
 
     companion object {
         const val MAX_GEMINI_KEYS = 10

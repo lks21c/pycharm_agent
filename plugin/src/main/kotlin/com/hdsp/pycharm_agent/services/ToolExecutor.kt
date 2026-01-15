@@ -17,10 +17,15 @@ class ToolExecutor(private val project: Project) {
 
     /**
      * Execute a tool call and return the result
+     *
+     * Supports both legacy tools and LangChain agent tools:
+     * - jupyter_cell, read_file, write_file, final_answer (legacy)
+     * - shell, edit_file, create_file, delete_file (LangChain)
      */
     fun execute(toolCall: ToolCall): ToolExecutionResult {
         return try {
             when (toolCall.tool) {
+                // Legacy tools
                 "jupyter_cell" -> executeJupyterCell(toolCall.parameters)
                 "read_file" -> executeReadFile(toolCall.parameters)
                 "write_file" -> executeWriteFile(toolCall.parameters)
@@ -28,6 +33,17 @@ class ToolExecutor(private val project: Project) {
                 "list_files" -> executeListFiles(toolCall.parameters)
                 "execute_command" -> executeCommand(toolCall.parameters)
                 "search_files" -> executeSearchFiles(toolCall.parameters)
+
+                // LangChain agent tools
+                "shell" -> executeShell(toolCall.parameters)
+                "edit_file" -> executeEditFile(toolCall.parameters)
+                "create_file" -> executeCreateFile(toolCall.parameters)
+                "delete_file" -> executeDeleteFile(toolCall.parameters)
+                "read" -> executeReadFile(toolCall.parameters)  // Alias for read_file
+                "write" -> executeWriteFile(toolCall.parameters)  // Alias for write_file
+                "glob" -> executeGlob(toolCall.parameters)
+                "grep" -> executeGrep(toolCall.parameters)
+
                 else -> ToolExecutionResult(
                     success = false,
                     error = ErrorInfo(message = "Unknown tool: ${toolCall.tool}")
@@ -262,6 +278,282 @@ class ToolExecutor(private val project: Project) {
         )
     }
 
+    // =========================================================================
+    // LangChain Agent Tools
+    // =========================================================================
+
+    /**
+     * Execute shell command (LangChain tool)
+     * Similar to execute_command but with broader support
+     */
+    private fun executeShell(params: Map<String, Any>): ToolExecutionResult {
+        val command = params["command"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'command' parameter")
+            )
+
+        val timeout = (params["timeout"] as? Number)?.toLong() ?: 30L
+
+        // Security check - block dangerous commands
+        val dangerousPatterns = listOf("rm -rf /", "rm -rf ~", ":(){ :|:& };:", "> /dev/sda")
+        if (dangerousPatterns.any { command.contains(it) }) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Dangerous command blocked for security")
+            )
+        }
+
+        return try {
+            val processBuilder = ProcessBuilder("sh", "-c", command)
+                .directory(File(project.basePath ?: "."))
+                .redirectErrorStream(true)
+
+            val process = processBuilder.start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+
+            if (exitCode == 0) {
+                ToolExecutionResult(success = true, output = output)
+            } else {
+                ToolExecutionResult(
+                    success = false,
+                    output = output,
+                    error = ErrorInfo(message = "Command failed with exit code $exitCode")
+                )
+            }
+        } catch (e: Exception) {
+            ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Shell execution failed: ${e.message}")
+            )
+        }
+    }
+
+    /**
+     * Edit file with specific changes (LangChain tool)
+     */
+    private fun executeEditFile(params: Map<String, Any>): ToolExecutionResult {
+        val filePath = params["path"]?.toString() ?: params["file"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'path' parameter")
+            )
+
+        val oldStr = params["old_str"]?.toString() ?: params["search"]?.toString()
+        val newStr = params["new_str"]?.toString() ?: params["replace"]?.toString() ?: ""
+
+        val fullPath = resolveFilePath(filePath)
+        val file = File(fullPath)
+
+        if (!file.exists()) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "File not found: $filePath")
+            )
+        }
+
+        val existingContent = file.readText()
+
+        val newContent = if (oldStr != null) {
+            if (!existingContent.contains(oldStr)) {
+                return ToolExecutionResult(
+                    success = false,
+                    error = ErrorInfo(message = "Search string not found in file")
+                )
+            }
+            existingContent.replace(oldStr, newStr)
+        } else {
+            // If no old_str, treat new_str as full replacement
+            newStr
+        }
+
+        val diff = generateDiff(fullPath, existingContent, newContent)
+        return ToolExecutionResult(
+            success = true,
+            diff = diff,
+            output = "Edit prepared for $filePath"
+        )
+    }
+
+    /**
+     * Create new file (LangChain tool)
+     */
+    private fun executeCreateFile(params: Map<String, Any>): ToolExecutionResult {
+        val filePath = params["path"]?.toString() ?: params["file"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'path' parameter")
+            )
+
+        val content = params["content"]?.toString() ?: ""
+
+        val fullPath = resolveFilePath(filePath)
+        val file = File(fullPath)
+
+        if (file.exists()) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "File already exists: $filePath")
+            )
+        }
+
+        val diff = generateDiff(fullPath, "", content)
+        return ToolExecutionResult(
+            success = true,
+            diff = diff,
+            output = "Create file: $filePath"
+        )
+    }
+
+    /**
+     * Delete file (LangChain tool) - returns diff for preview
+     */
+    private fun executeDeleteFile(params: Map<String, Any>): ToolExecutionResult {
+        val filePath = params["path"]?.toString() ?: params["file"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'path' parameter")
+            )
+
+        val fullPath = resolveFilePath(filePath)
+        val file = File(fullPath)
+
+        if (!file.exists()) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "File not found: $filePath")
+            )
+        }
+
+        val existingContent = file.readText()
+        val diff = DiffResult(
+            filePath = fullPath,
+            hunks = listOf(DiffHunk(
+                startLine = 1,
+                endLine = existingContent.lines().size,
+                originalContent = existingContent,
+                newContent = "",
+                changeType = "delete"
+            )),
+            unifiedDiff = "--- a/$filePath\n+++ /dev/null\n@@ -1,${existingContent.lines().size} +0,0 @@\n${existingContent.lines().joinToString("\n") { "-$it" }}",
+            previewContent = ""  // Empty content = delete
+        )
+
+        return ToolExecutionResult(
+            success = true,
+            diff = diff,
+            output = "Delete file: $filePath"
+        )
+    }
+
+    /**
+     * Glob pattern file search (LangChain tool)
+     */
+    private fun executeGlob(params: Map<String, Any>): ToolExecutionResult {
+        val pattern = params["pattern"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'pattern' parameter")
+            )
+
+        val basePath = params["path"]?.toString() ?: "."
+        val fullPath = resolveFilePath(basePath)
+
+        val results = mutableListOf<String>()
+        val globRegex = pattern
+            .replace(".", "\\.")
+            .replace("**", "{{DOUBLE_STAR}}")
+            .replace("*", "[^/]*")
+            .replace("{{DOUBLE_STAR}}", ".*")
+            .let { Regex(it) }
+
+        File(fullPath).walkTopDown()
+            .filter { it.isFile && !it.path.contains(".git") }
+            .take(500)
+            .forEach { file ->
+                val relativePath = file.relativeTo(File(fullPath)).path
+                if (globRegex.matches(relativePath)) {
+                    results.add(relativePath)
+                }
+            }
+
+        return ToolExecutionResult(
+            success = true,
+            output = if (results.isEmpty()) "No files matched pattern" else results.joinToString("\n")
+        )
+    }
+
+    /**
+     * Grep search (LangChain tool)
+     */
+    private fun executeGrep(params: Map<String, Any>): ToolExecutionResult {
+        val pattern = params["pattern"]?.toString() ?: params["regex"]?.toString()
+            ?: return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Missing 'pattern' parameter")
+            )
+
+        val path = params["path"]?.toString() ?: "."
+        val glob = params["glob"]?.toString()
+        val contextLines = (params["context"] as? Number)?.toInt() ?: 0
+
+        val fullPath = resolveFilePath(path)
+        val results = mutableListOf<String>()
+
+        try {
+            val regex = Regex(pattern, setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE))
+            val globPattern = glob?.let {
+                it.replace(".", "\\.")
+                    .replace("**", "{{DOUBLE_STAR}}")
+                    .replace("*", "[^/]*")
+                    .replace("{{DOUBLE_STAR}}", ".*")
+                    .let { p -> Regex(p) }
+            }
+
+            File(fullPath).walkTopDown()
+                .filter { file ->
+                    file.isFile &&
+                    !file.path.contains(".git") &&
+                    (globPattern == null || globPattern.matches(file.relativeTo(File(fullPath)).path))
+                }
+                .take(100)
+                .forEach { file ->
+                    try {
+                        val lines = file.readLines()
+                        lines.forEachIndexed { lineNum, line ->
+                            if (regex.containsMatchIn(line)) {
+                                val relativePath = file.relativeTo(File(fullPath)).path
+                                if (contextLines > 0) {
+                                    val startLine = maxOf(0, lineNum - contextLines)
+                                    val endLine = minOf(lines.size - 1, lineNum + contextLines)
+                                    for (i in startLine..endLine) {
+                                        val prefix = if (i == lineNum) ">" else " "
+                                        results.add("$relativePath:${i + 1}:$prefix ${lines[i]}")
+                                    }
+                                    results.add("---")
+                                } else {
+                                    results.add("$relativePath:${lineNum + 1}: $line")
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Skip files that can't be read
+                    }
+                }
+        } catch (e: Exception) {
+            return ToolExecutionResult(
+                success = false,
+                error = ErrorInfo(message = "Invalid regex pattern: ${e.message}")
+            )
+        }
+
+        return ToolExecutionResult(
+            success = true,
+            output = if (results.isEmpty()) "No matches found" else results.take(200).joinToString("\n")
+        )
+    }
+
     /**
      * Resolve file path relative to project root
      */
@@ -338,25 +630,41 @@ class ToolExecutor(private val project: Project) {
 
     /**
      * Apply a diff result to the actual file
+     * Handles create, modify, and delete operations
      */
     fun applyDiff(diff: DiffResult): Boolean {
         return try {
             val file = File(diff.filePath)
 
-            // Ensure parent directories exist
-            file.parentFile?.mkdirs()
-
-            // Write the new content
-            file.writeText(diff.previewContent)
-
-            // Refresh VFS
-            ApplicationManager.getApplication().invokeLater {
-                LocalFileSystem.getInstance().refreshAndFindFileByPath(diff.filePath)?.let { vf ->
-                    vf.refresh(false, false)
+            if (diff.previewContent.isEmpty() && file.exists()) {
+                // Delete operation
+                val deleted = file.delete()
+                if (deleted) {
+                    // Refresh VFS
+                    ApplicationManager.getApplication().invokeLater {
+                        LocalFileSystem.getInstance().refreshAndFindFileByPath(diff.filePath)?.let { vf ->
+                            vf.refresh(false, false)
+                        }
+                    }
                 }
-            }
+                deleted
+            } else {
+                // Create or modify operation
+                // Ensure parent directories exist
+                file.parentFile?.mkdirs()
 
-            true
+                // Write the new content
+                file.writeText(diff.previewContent)
+
+                // Refresh VFS
+                ApplicationManager.getApplication().invokeLater {
+                    LocalFileSystem.getInstance().refreshAndFindFileByPath(diff.filePath)?.let { vf ->
+                        vf.refresh(false, false)
+                    }
+                }
+
+                true
+            }
         } catch (e: Exception) {
             false
         }
