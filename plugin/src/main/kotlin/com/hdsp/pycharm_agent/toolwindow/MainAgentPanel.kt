@@ -48,7 +48,7 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
                 toolTipText = "Open PyCharm Agent Settings"
                 preferredSize = Dimension(28, 28)
                 addActionListener {
-                    ShowSettingsUtil.getInstance().showSettingsDialog(project, AgentSettingsConfigurable::class.java)
+                    ShowSettingsUtil.getInstance().editConfigurable(project, AgentSettingsConfigurable())
                 }
             }
             add(settingsButton, BorderLayout.EAST)
