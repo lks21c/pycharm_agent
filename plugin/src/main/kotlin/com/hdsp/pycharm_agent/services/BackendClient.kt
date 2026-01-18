@@ -16,6 +16,7 @@ import okhttp3.sse.EventSources
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -389,6 +390,7 @@ class BackendClient(private val project: Project) {
 
         val latch = CountDownLatch(1)
         val errorRef = AtomicReference<Throwable?>(null)
+        val completedNormally = AtomicBoolean(false)
 
         val listener = object : EventSourceListener() {
             override fun onEvent(
@@ -436,6 +438,7 @@ class BackendClient(private val project: Project) {
 
                         "complete" -> {
                             // Agent completed
+                            completedNormally.set(true)
                             event.get("thread_id")?.asString?.let { completedThreadId ->
                                 onComplete(completedThreadId)
                             }
@@ -485,7 +488,8 @@ class BackendClient(private val project: Project) {
                                     args = args,
                                     description = event.get("description")?.asString ?: ""
                                 ))
-                                // Note: We don't cancel here - wait for resume
+                                // Interrupt is a normal termination - user will resume later
+                                completedNormally.set(true)
                                 eventSource.cancel()
                                 latch.countDown()
                                 return
@@ -518,6 +522,12 @@ class BackendClient(private val project: Project) {
             }
 
             override fun onClosed(eventSource: EventSource) {
+                if (!completedNormally.get() && errorRef.get() == null) {
+                    // SSE connection closed without proper completion or error
+                    // This indicates an unexpected disconnection
+                    logger.warn("SSE connection closed unexpectedly without completion signal")
+                    errorRef.set(IOException("SSE connection closed unexpectedly"))
+                }
                 latch.countDown()
             }
         }
@@ -604,6 +614,7 @@ class BackendClient(private val project: Project) {
 
         val latch = CountDownLatch(1)
         val errorRef = AtomicReference<Throwable?>(null)
+        val completedNormally = AtomicBoolean(false)
 
         val listener = object : EventSourceListener() {
             override fun onEvent(
@@ -647,6 +658,7 @@ class BackendClient(private val project: Project) {
                         }
 
                         "complete" -> {
+                            completedNormally.set(true)
                             event.get("thread_id")?.asString?.let { completedThreadId ->
                                 onComplete(completedThreadId)
                             }
@@ -692,6 +704,8 @@ class BackendClient(private val project: Project) {
                                     args = interruptArgs,
                                     description = event.get("description")?.asString ?: ""
                                 ))
+                                // Interrupt is a normal termination - user will resume later
+                                completedNormally.set(true)
                                 eventSource.cancel()
                                 latch.countDown()
                                 return
@@ -722,6 +736,12 @@ class BackendClient(private val project: Project) {
             }
 
             override fun onClosed(eventSource: EventSource) {
+                if (!completedNormally.get() && errorRef.get() == null) {
+                    // SSE connection closed without proper completion or error
+                    // This indicates an unexpected disconnection
+                    logger.warn("SSE connection closed unexpectedly without completion signal (resume)")
+                    errorRef.set(IOException("SSE connection closed unexpectedly"))
+                }
                 latch.countDown()
             }
         }

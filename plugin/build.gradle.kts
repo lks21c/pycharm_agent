@@ -28,6 +28,9 @@ dependencies {
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
 
+    // Markdown rendering
+    implementation("com.vladsch.flexmark:flexmark-all:0.64.8")
+
     // Note: Kotlin coroutines are provided by IntelliJ Platform
 
     // Testing
