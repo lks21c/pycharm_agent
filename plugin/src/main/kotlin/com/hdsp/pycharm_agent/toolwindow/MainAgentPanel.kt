@@ -26,6 +26,7 @@ import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.io.File
 import javax.swing.*
+import javax.swing.event.HyperlinkEvent
 import javax.swing.text.html.HTMLEditorKit
 import javax.swing.text.html.StyleSheet
 
@@ -456,6 +457,7 @@ class MessagePanel(
     private val contentPane: JEditorPane
     private val bubble: RoundedPanel
     private var currentContent: String = ""
+    private val codeBlocks = mutableListOf<String>()
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -503,6 +505,19 @@ class MessagePanel(
             setupStyleSheet(styleSheet)
             kit.styleSheet = styleSheet
             editorKit = kit
+
+            // Handle copy link clicks
+            addHyperlinkListener { e ->
+                if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                    val url = e.description
+                    if (url != null && url.startsWith("copy:")) {
+                        val index = url.removePrefix("copy:").toIntOrNull()
+                        if (index != null && index < codeBlocks.size) {
+                            copyToClipboard(codeBlocks[index])
+                        }
+                    }
+                }
+            }
         }
 
         bubble.add(contentPane, BorderLayout.CENTER)
@@ -656,12 +671,20 @@ class MessagePanel(
     /**
      * Highlight code blocks in HTML content.
      * Replaces <pre><code> structure with styled <div> to allow HTML rendering inside.
+     * Adds copy button via anchor tag with hyperlink listener.
      */
     private fun highlightCodeBlocks(html: String): String {
         var result = html
 
-        // Code block style (dark background, monospace font)
-        val codeBlockStyle = "background-color:#1E1E1E;padding:12px;margin:8px 0;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#D4D4D4"
+        // Clear previous code blocks
+        codeBlocks.clear()
+
+        // Styles
+        val containerStyle = "background-color:#1E1E1E;margin:8px 0"
+        val headerStyle = "background-color:#2D2D2D;padding:4px 8px"
+        val codeStyle = "padding:12px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#D4D4D4"
+        val langStyle = "color:#808080;font-size:11px"
+        val copyLinkStyle = "color:#858585;font-size:11px;text-decoration:none"
 
         // Pattern to match code blocks with language tag inside <pre>
         val taggedPreCodePattern = """<pre[^>]*>\s*<code\s+class="language-(\w+)">([\s\S]*?)</code>\s*</pre>""".toRegex()
@@ -669,8 +692,18 @@ class MessagePanel(
             val language = match.groupValues[1]
             val codeContent = match.groupValues[2]
             val decodedContent = decodeHtmlEntities(codeContent)
+            val index = codeBlocks.size
+            codeBlocks.add(decodedContent)
             val highlightedCode = SyntaxHighlighter.highlight(decodedContent, language)
-            """<div style="$codeBlockStyle">$highlightedCode</div>"""
+            """<div style="$containerStyle">
+                <table width="100%" cellpadding="0" cellspacing="0" style="$headerStyle">
+                    <tr>
+                        <td align="left"><span style="$langStyle">$language</span></td>
+                        <td align="right"><a href="copy:$index" style="$copyLinkStyle">Copy</a></td>
+                    </tr>
+                </table>
+                <div style="$codeStyle">$highlightedCode</div>
+            </div>"""
         }
 
         // Pattern to match code blocks without language tag
@@ -678,8 +711,18 @@ class MessagePanel(
         result = untaggedPreCodePattern.replace(result) { match ->
             val codeContent = match.groupValues[1]
             val decodedContent = decodeHtmlEntities(codeContent)
+            val index = codeBlocks.size
+            codeBlocks.add(decodedContent)
             val highlightedCode = SyntaxHighlighter.highlightWithAutoDetect(decodedContent)
-            """<div style="$codeBlockStyle">$highlightedCode</div>"""
+            """<div style="$containerStyle">
+                <table width="100%" cellpadding="0" cellspacing="0" style="$headerStyle">
+                    <tr>
+                        <td align="left"><span style="$langStyle">code</span></td>
+                        <td align="right"><a href="copy:$index" style="$copyLinkStyle">Copy</a></td>
+                    </tr>
+                </table>
+                <div style="$codeStyle">$highlightedCode</div>
+            </div>"""
         }
 
         return result
@@ -695,6 +738,14 @@ class MessagePanel(
             .replace("&gt;", ">")
             .replace("&quot;", "\"")
             .replace("&#39;", "'")
+    }
+
+    /**
+     * Copy text to system clipboard
+     */
+    private fun copyToClipboard(text: String) {
+        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+        clipboard.setContents(StringSelection(text), null)
     }
 }
 
@@ -785,7 +836,24 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
     private val executedOperations = mutableSetOf<String>()
     private var lastTodos: List<TodoItem> = emptyList()
 
+    // Code blocks for copy functionality
+    private val agentCodeBlocks = mutableListOf<String>()
+
     init {
+        // Handle copy link clicks in response area
+        responseArea.addHyperlinkListener { e ->
+            if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                val url = e.description
+                if (url != null && url.startsWith("copy:")) {
+                    val index = url.removePrefix("copy:").toIntOrNull()
+                    if (index != null && index < agentCodeBlocks.size) {
+                        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+                        clipboard.setContents(StringSelection(agentCodeBlocks[index]), null)
+                    }
+                }
+            }
+        }
+
         // Top panel with status banner and request area
         val topPanel = JPanel(BorderLayout())
         topPanel.add(statusBanner, BorderLayout.NORTH)
@@ -1805,9 +1873,13 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
     /**
      * Highlight code blocks in agent response HTML
      * Replaces <pre><code> structure with styled <div> to allow HTML rendering inside.
+     * Adds copy button via anchor tag with hyperlink listener.
      */
     private fun highlightAgentCodeBlocks(html: String): String {
         var result = html
+
+        // Clear previous code blocks
+        agentCodeBlocks.clear()
 
         // Helper function to decode HTML entities
         fun decode(text: String): String = text
@@ -1817,8 +1889,12 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
             .replace("&quot;", "\"")
             .replace("&#39;", "'")
 
-        // Code block style (dark background, monospace font)
-        val codeBlockStyle = "background-color:#1E1E1E;padding:12px;margin:8px 0;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#D4D4D4"
+        // Styles
+        val containerStyle = "background-color:#1E1E1E;margin:8px 0"
+        val headerStyle = "background-color:#2D2D2D;padding:4px 8px"
+        val codeStyle = "padding:12px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-wrap:break-word;color:#D4D4D4"
+        val langStyle = "color:#808080;font-size:11px"
+        val copyLinkStyle = "color:#858585;font-size:11px;text-decoration:none"
 
         // Pattern to match code blocks with language tag inside <pre>
         val taggedPreCodePattern = """<pre[^>]*>\s*<code\s+class="language-(\w+)">([\s\S]*?)</code>\s*</pre>""".toRegex()
@@ -1826,8 +1902,18 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
             val language = match.groupValues[1]
             val codeContent = match.groupValues[2]
             val decodedContent = decode(codeContent)
+            val index = agentCodeBlocks.size
+            agentCodeBlocks.add(decodedContent)
             val highlightedCode = SyntaxHighlighter.highlight(decodedContent, language)
-            """<div style="$codeBlockStyle">$highlightedCode</div>"""
+            """<div style="$containerStyle">
+                <table width="100%" cellpadding="0" cellspacing="0" style="$headerStyle">
+                    <tr>
+                        <td align="left"><span style="$langStyle">$language</span></td>
+                        <td align="right"><a href="copy:$index" style="$copyLinkStyle">Copy</a></td>
+                    </tr>
+                </table>
+                <div style="$codeStyle">$highlightedCode</div>
+            </div>"""
         }
 
         // Pattern to match code blocks without language tag
@@ -1835,8 +1921,18 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         result = untaggedPreCodePattern.replace(result) { match ->
             val codeContent = match.groupValues[1]
             val decodedContent = decode(codeContent)
+            val index = agentCodeBlocks.size
+            agentCodeBlocks.add(decodedContent)
             val highlightedCode = SyntaxHighlighter.highlightWithAutoDetect(decodedContent)
-            """<div style="$codeBlockStyle">$highlightedCode</div>"""
+            """<div style="$containerStyle">
+                <table width="100%" cellpadding="0" cellspacing="0" style="$headerStyle">
+                    <tr>
+                        <td align="left"><span style="$langStyle">code</span></td>
+                        <td align="right"><a href="copy:$index" style="$copyLinkStyle">Copy</a></td>
+                    </tr>
+                </table>
+                <div style="$codeStyle">$highlightedCode</div>
+            </div>"""
         }
 
         return result
