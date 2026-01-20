@@ -34,7 +34,9 @@ import javax.swing.text.html.StyleSheet
  * Input mode for the unified panel
  */
 enum class InputMode {
-    CHAT, AGENT
+    CHAT,       // Simple Q&A conversation
+    AGENT_V1,   // Plan-Execute pattern (traditional)
+    AGENT_V2    // LangChain streaming (HITL)
 }
 
 /**
@@ -106,7 +108,8 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val cardLayout = CardLayout()
     private val contentPanel = JPanel(cardLayout)
     private val chatPanel = ChatPanel(project)
-    private val agentPanel = AgentModePanel(project)
+    private val agentV1Panel by lazy { AgentV1Panel(project) }
+    private val agentV2Panel = AgentModePanel(project)
 
     private var currentMode = InputMode.CHAT
     private val modeToggleButton = JButton()
@@ -127,9 +130,10 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
         add(headerPanel, BorderLayout.NORTH)
 
-        // Content panel with CardLayout
+        // Content panel with CardLayout (3 modes)
         contentPanel.add(chatPanel, "CHAT")
-        contentPanel.add(agentPanel, "AGENT")
+        contentPanel.add(agentV1Panel, "AGENT_V1")
+        contentPanel.add(agentV2Panel, "AGENT_V2")
         add(contentPanel, BorderLayout.CENTER)
 
         // Bottom mode toggle bar (GitHub Copilot style)
@@ -178,7 +182,12 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun toggleMode() {
-        currentMode = if (currentMode == InputMode.CHAT) InputMode.AGENT else InputMode.CHAT
+        // Cycle through 3 modes: CHAT -> AGENT_V1 -> AGENT_V2 -> CHAT
+        currentMode = when (currentMode) {
+            InputMode.CHAT -> InputMode.AGENT_V1
+            InputMode.AGENT_V1 -> InputMode.AGENT_V2
+            InputMode.AGENT_V2 -> InputMode.CHAT
+        }
         updateModeUI()
     }
 
@@ -187,15 +196,22 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
             InputMode.CHAT -> {
                 cardLayout.show(contentPanel, "CHAT")
                 modeToggleButton.text = "💬 Chat"
-                modeToggleButton.toolTipText = "Switch to Agent mode (⇧Tab)"
+                modeToggleButton.toolTipText = "Switch to Agent V1 mode (⇧Tab)"
                 modeLabel.text = "General conversation"
                 modeToggleButton.background = JBColor(Color(230, 240, 255), Color(50, 60, 80))
             }
-            InputMode.AGENT -> {
-                cardLayout.show(contentPanel, "AGENT")
-                modeToggleButton.text = "🤖 Agent"
+            InputMode.AGENT_V1 -> {
+                cardLayout.show(contentPanel, "AGENT_V1")
+                modeToggleButton.text = "📋 V1"
+                modeToggleButton.toolTipText = "Switch to Agent V2 mode (⇧Tab)"
+                modeLabel.text = "Plan & execute with preview"
+                modeToggleButton.background = JBColor(Color(255, 245, 220), Color(80, 70, 40))
+            }
+            InputMode.AGENT_V2 -> {
+                cardLayout.show(contentPanel, "AGENT_V2")
+                modeToggleButton.text = "🤖 V2"
                 modeToggleButton.toolTipText = "Switch to Chat mode (⇧Tab)"
-                modeLabel.text = "Plan & execute code changes"
+                modeLabel.text = "LangChain streaming agent"
                 modeToggleButton.background = JBColor(Color(255, 240, 230), Color(80, 60, 50))
             }
         }
