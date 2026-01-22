@@ -1830,7 +1830,6 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
                 background-color: #1E1E1E;
                 padding: 12px;
                 margin: 8px 0;
-                border-radius: 4px;
             }
             pre code {
                 background-color: transparent;

@@ -55,29 +55,36 @@ class BackendClient(private val project: Project) {
      *
      * Financial Security: Only sends SINGLE key per request
      * Key rotation handled by client, not server
+     *
+     * Note: Only includes provider config if API key is present.
+     * Server requires non-null apiKey in provider config (422 if null).
      */
     private fun buildLlmConfig(): Map<String, Any?> {
         val settings = AgentSettings.getInstance()
+        val geminiKey = settings.getCurrentGeminiKey()
+        val openaiKey = settings.openaiApiKey
+        val vllmEndpoint = settings.vllmEndpoint
+
         return mapOf(
             "provider" to settings.provider,
-            "gemini" to when (settings.provider) {
-                "gemini" -> mapOf(
-                    "apiKey" to settings.getCurrentGeminiKey(),
+            "gemini" to when {
+                settings.provider == "gemini" && !geminiKey.isNullOrBlank() -> mapOf(
+                    "apiKey" to geminiKey,
                     "model" to settings.geminiModel
                 )
                 else -> null
             },
-            "openai" to when (settings.provider) {
-                "openai" -> mapOf(
-                    "apiKey" to settings.openaiApiKey,
+            "openai" to when {
+                settings.provider == "openai" && openaiKey.isNotBlank() -> mapOf(
+                    "apiKey" to openaiKey,
                     "model" to settings.openaiModel
                 )
                 else -> null
             },
-            "vllm" to when (settings.provider) {
-                "vllm" -> mapOf(
-                    "endpoint" to settings.vllmEndpoint,
-                    "apiKey" to settings.vllmApiKey,
+            "vllm" to when {
+                settings.provider == "vllm" && vllmEndpoint.isNotBlank() -> mapOf(
+                    "endpoint" to vllmEndpoint,
+                    "apiKey" to settings.vllmApiKey.takeIf { it.isNotBlank() },
                     "model" to settings.vllmModel
                 )
                 else -> null
