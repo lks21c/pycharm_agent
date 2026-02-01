@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Plan API Simulation" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.005">
+  <properties/>
+  <testcase name="plan endpoint returns plan response()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$PlanApiSimulation" time="0.005"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Data Classes" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.014">
+  <properties/>
+  <testcase name="ChatMetadata serializes correctly()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$DataClasses" time="0.004"/>
+  <testcase name="ToolCallEvent handles all optional fields()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$DataClasses" time="0.002"/>
+  <testcase name="TodoItem status values()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$DataClasses" time="0.001"/>
+  <testcase name="NotebookContext serializes with all fields()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$DataClasses" time="0.003"/>
+  <testcase name="AgentInterrupt contains required fields()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$DataClasses" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Health Check Simulation" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.008">
+  <properties/>
+  <testcase name="health endpoint returns success()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$HealthCheck" time="0.004"/>
+  <testcase name="health endpoint returns failure()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$HealthCheck" time="0.004"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Rate Limit Detection" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.003">
+  <properties/>
+  <testcase name="isRateLimitMessage detects 429 status code()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$RateLimitDetection" time="0.002"/>
+  <testcase name="isRateLimitMessage detects rate limit in body()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$RateLimitDetection" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

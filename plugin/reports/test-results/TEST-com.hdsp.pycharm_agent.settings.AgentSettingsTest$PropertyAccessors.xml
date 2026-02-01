@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Property Accessors" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.012">
+  <properties/>
+  <testcase name="idleTimeoutMinutes getter and setter work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.001"/>
+  <testcase name="boolean settings work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.001"/>
+  <testcase name="vllm settings getter and setter work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.0"/>
+  <testcase name="geminiModel getter and setter work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.001"/>
+  <testcase name="openaiApiKey getter and setter work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.001"/>
+  <testcase name="backendUrl getter and setter work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.0"/>
+  <testcase name="systemPrompt getter and setter work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.001"/>
+  <testcase name="provider getter and setter work correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$PropertyAccessors" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

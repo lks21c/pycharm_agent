@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="HDSP API Response Models" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.02">
+  <properties/>
+  <testcase name="ReplanResponse decision values()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$HdspApiModels" time="0.003"/>
+  <testcase name="ErrorInfo has sensible defaults()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$HdspApiModels" time="0.001"/>
+  <testcase name="RefineResponse deserializes correctly()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$HdspApiModels" time="0.006"/>
+  <testcase name="HdspPlanResponse deserializes correctly()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$HdspApiModels" time="0.005"/>
+  <testcase name="VerifyStateResponse handles discrepancies()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$HdspApiModels" time="0.004"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="API Key Rotation" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.02">
+  <properties/>
+  <testcase name="getValidKeyCount returns correct count()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.002"/>
+  <testcase name="getCurrentGeminiKey returns null when no keys configured()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.002"/>
+  <testcase name="getCurrentGeminiKey skips blank keys()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.001"/>
+  <testcase name="getNextValidKey returns null when all keys rate limited()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.001"/>
+  <testcase name="getCurrentKeyIndex returns current index()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.002"/>
+  <testcase name="resetKeyRotation clears rate limits()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.002"/>
+  <testcase name="key rotation wraps around correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.001"/>
+  <testcase name="getCurrentGeminiKey returns first key initially()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.0"/>
+  <testcase name="markKeyAsRateLimited marks key correctly()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.001"/>
+  <testcase name="getNextValidKey returns next non-rate-limited key()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$ApiKeyRotation" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

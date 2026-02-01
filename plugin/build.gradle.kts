@@ -19,6 +19,7 @@ dependencies {
     intellijPlatform {
         pycharmCommunity(project.property("platformVersion") as String)
         bundledPlugin("PythonCore")
+        testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
 
     // HTTP Client
@@ -33,8 +34,22 @@ dependencies {
 
     // Note: Kotlin coroutines are provided by IntelliJ Platform
 
-    // Testing
-    testImplementation("junit:junit:4.13.2")
+    // Testing - JUnit 5
+    testImplementation("org.junit.jupiter:junit-jupiter-api:5.10.2")
+    testImplementation("org.junit.jupiter:junit-jupiter-params:5.10.2")
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.10.2")
+
+    // MockK for Kotlin mocking
+    testImplementation("io.mockk:mockk:1.13.10")
+
+    // OkHttp MockWebServer for HTTP testing
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+
+    // Kotlin coroutines test
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.0")
+
+    // Note: Remote Robot removed - E2E tests now use Python-based prompt testing
+    // See plugin/tests/e2e/run_prompt_tests.py
 }
 
 intellijPlatform {
@@ -66,4 +81,19 @@ tasks {
     buildSearchableOptions {
         enabled = false
     }
+
+    test {
+        useJUnitPlatform()
+        testLogging {
+            events("passed", "skipped", "failed")
+            showStandardStreams = true
+        }
+        // Output reports to ~/repo/pycharm_agents/reports directory
+        val reportsDir = file(System.getProperty("user.home") + "/repo/pycharm_agents/reports")
+        reports {
+            html.outputLocation = reportsDir.resolve("test")
+            junitXml.outputLocation = reportsDir.resolve("test-results")
+        }
+    }
+
 }

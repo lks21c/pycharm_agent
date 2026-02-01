@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="MockWebServer SSE Tests" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.008">
+  <properties/>
+  <testcase name="SSE interrupt event format()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$SseTests" time="0.001"/>
+  <testcase name="SSE todos event parsing()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$SseTests" time="0.001"/>
+  <testcase name="SSE event parsing format()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$SseTests" time="0.001"/>
+  <testcase name="SSE complete event format()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$SseTests" time="0.001"/>
+  <testcase name="SSE error event format()" classname="com.hdsp.pycharm_agent.services.BackendClientTest$SseTests" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

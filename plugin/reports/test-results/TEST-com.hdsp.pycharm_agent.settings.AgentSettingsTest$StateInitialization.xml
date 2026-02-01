@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="State Initialization" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-02-01T05:19:44" hostname="igwangsBookPro2.asus.com" time="0.001">
+  <properties/>
+  <testcase name="loadState correctly applies state()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$StateInitialization" time="0.0"/>
+  <testcase name="default state has correct initial values()" classname="com.hdsp.pycharm_agent.settings.AgentSettingsTest$StateInitialization" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

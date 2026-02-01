@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-02-01T06:03:39.538090+00:00",
+  "total_prompts": 1,
+  "passed": 1,
+  "failed": 0,
+  "pass_rate": 100.0,
+  "average_score": 74.0,
+  "average_latency_ms": 95790.0,
+  "by_category": {
+    "eda": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "average_score": 74.0
+    }
+  },
+  "failures": []
+}

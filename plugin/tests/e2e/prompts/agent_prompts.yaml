@@ -1,0 +1,117 @@
+# Agent Mode Test Prompts for PyCharm Agent
+# Category: agent
+# Purpose: Test Agent mode (plan-execute pattern with diff preview)
+# Note: These are PyCharm Agent specific tests, not shared with hdsp_agent
+
+prompts:
+  # ===================================================================
+  # Basic Agent Planning
+  # ===================================================================
+
+  - id: AGENT-001
+    text: "현재 프로젝트의 README.md 파일을 분석하고 개선점을 제안해줘"
+    category: agent
+    expected_patterns:
+      - "plan|계획|분석"
+      - "step|단계"
+    expected_actions: [analyze, plan, suggest]
+    tags: [agent, planning, documentation]
+
+  - id: AGENT-002
+    text: "이 Python 파일의 함수들을 분석하고 리팩토링 계획을 세워줘"
+    category: agent
+    expected_patterns:
+      - "함수|function"
+      - "리팩토링|refactor"
+      - "plan|계획"
+    expected_actions: [analyze, identify_functions, plan_refactoring]
+    tags: [agent, refactoring, analysis]
+
+  # ===================================================================
+  # Code Generation with Plan
+  # ===================================================================
+
+  - id: AGENT-003
+    text: "FastAPI 엔드포인트를 추가하는 계획을 세워줘. GET /health 엔드포인트가 필요해"
+    category: agent
+    expected_patterns:
+      - "FastAPI|endpoint"
+      - "/health|GET"
+      - "plan|step|단계"
+    expected_actions: [plan, generate_endpoint]
+    tags: [agent, fastapi, code-generation]
+
+  - id: AGENT-004
+    text: "테스트 코드를 작성하는 계획을 세워줘. pytest를 사용해서 기본 테스트 케이스를 추가하고 싶어"
+    category: agent
+    expected_patterns:
+      - "pytest|test"
+      - "plan|계획"
+    expected_actions: [plan, generate_tests]
+    tags: [agent, testing, pytest]
+
+  # ===================================================================
+  # Multi-Step Operations
+  # ===================================================================
+
+  - id: AGENT-005
+    text: "이 프로젝트에 로깅 시스템을 추가하는 전체 계획을 세워줘"
+    category: agent
+    expected_patterns:
+      - "logging|로깅|log"
+      - "plan|step|단계"
+    expected_actions: [analyze_structure, plan_logging, implement]
+    tags: [agent, logging, multi-step]
+
+  - id: AGENT-006
+    text: "에러 핸들링을 개선하는 계획을 세워줘. 현재 코드에서 예외 처리가 부족한 부분을 찾아서 개선해야 해"
+    category: agent
+    expected_patterns:
+      - "error|exception|예외|에러"
+      - "plan|계획|분석"
+    expected_actions: [analyze, identify_issues, plan_fixes]
+    tags: [agent, error-handling, improvement]
+
+  # ===================================================================
+  # Analysis Tasks
+  # ===================================================================
+
+  - id: AGENT-007
+    text: "이 코드베이스의 의존성을 분석하고 업데이트가 필요한 패키지 목록을 정리해줘"
+    category: agent
+    expected_patterns:
+      - "dependency|의존성|package"
+      - "update|업데이트"
+    expected_actions: [analyze_dependencies, check_versions, report]
+    tags: [agent, dependencies, analysis]
+
+  - id: AGENT-008
+    text: "보안 취약점을 점검하는 계획을 세워줘"
+    category: agent
+    expected_patterns:
+      - "security|보안"
+      - "plan|점검|분석"
+    expected_actions: [security_scan, identify_issues, plan_fixes]
+    tags: [agent, security, analysis]
+
+  # ===================================================================
+  # Documentation
+  # ===================================================================
+
+  - id: AGENT-009
+    text: "이 모듈의 API 문서를 생성하는 계획을 세워줘"
+    category: agent
+    expected_patterns:
+      - "API|문서|documentation"
+      - "plan|생성"
+    expected_actions: [analyze_api, generate_docs]
+    tags: [agent, documentation, api]
+
+  - id: AGENT-010
+    text: "코드에 docstring을 추가하는 계획을 세워줘"
+    category: agent
+    expected_patterns:
+      - "docstring|문서화"
+      - "plan|추가"
+    expected_actions: [identify_functions, add_docstrings]
+    tags: [agent, documentation, docstring]
