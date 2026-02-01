@@ -47,11 +47,15 @@ RESULTS_DIR = TESTS_DIR / "results"
 CASSETTES_DIR = TESTS_DIR / "cassettes"
 
 # Shared prompts from hdsp_agent (avoid duplication)
-HDSP_AGENT_PROMPTS_DIR = Path.home() / "repo" / "hdsp_agent" / "tests" / "e2e" / "prompts"
+HDSP_AGENT_ROOT = Path.home() / "repo" / "hdsp_agent"
+HDSP_AGENT_PROMPTS_DIR = HDSP_AGENT_ROOT / "tests" / "e2e" / "prompts"
 LOCAL_PROMPTS_DIR = TESTS_DIR / "prompts"  # For agent-specific prompts only
 
 # Reports directory (same as hdsp_agent pattern)
 REPORTS_DIR = Path.home() / "repo" / "pycharm_agents" / "reports"
+
+# Default workspace root for executing code (use hdsp_agent for data access)
+DEFAULT_WORKSPACE_ROOT = HDSP_AGENT_ROOT
 
 # Logging setup
 logging.basicConfig(
@@ -404,6 +408,7 @@ class LiveExecutor:
         steps: list[ExecutionStep] = []
         full_response = ""
         all_code_generated: list[str] = []
+        execution_errors: list[str] = []  # Track execution failures
 
         def add_step(
             phase: str,
@@ -443,7 +448,7 @@ class LiveExecutor:
                         capture_output=True,
                         text=True,
                         timeout=timeout_sec,
-                        cwd=prompt.context.get("workspaceRoot", "."),
+                        cwd=prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT),
                     )
                     output = result.stdout + result.stderr
                     success = result.returncode == 0
@@ -500,7 +505,7 @@ class LiveExecutor:
                         capture_output=True,
                         text=True,
                         timeout=60,
-                        cwd=prompt.context.get("workspaceRoot", "."),
+                        cwd=prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT),
                     )
                     output = result.stdout + result.stderr
                     os.unlink(temp_file)
@@ -534,7 +539,7 @@ class LiveExecutor:
                 file_path = tool_args.get("path", "")
                 content = tool_args.get("content", "")
                 try:
-                    workspace = prompt.context.get("workspaceRoot", ".")
+                    workspace = prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT)
                     full_path = os.path.join(workspace, file_path)
                     os.makedirs(os.path.dirname(full_path), exist_ok=True)
                     with open(full_path, "w") as f:
@@ -561,7 +566,7 @@ class LiveExecutor:
             elif tool_name in ("read_file", "read_file_tool"):
                 file_path = tool_args.get("path", "")
                 try:
-                    workspace = prompt.context.get("workspaceRoot", ".")
+                    workspace = prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT)
                     full_path = os.path.join(workspace, file_path)
                     with open(full_path) as f:
                         content = f.read()
@@ -673,6 +678,11 @@ class LiveExecutor:
                         # Execute tool locally
                         exec_result = execute_tool(tool_name, tool_args)
 
+                        # Track execution failures
+                        if not exec_result.get("success", True):
+                            error_msg = exec_result.get("error") or exec_result.get("stderr", "Unknown error")
+                            execution_errors.append(f"{tool_name}: {error_msg}")
+
                         # Return interrupt info for resume
                         return thread_id, None, {
                             "tool": tool_name,
@@ -723,7 +733,7 @@ class LiveExecutor:
                 "request": prompt.text,
                 "threadId": None,
                 "llmConfig": llm_config,
-                "workspaceRoot": prompt.context.get("workspaceRoot", "."),
+                "workspaceRoot": prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT),
             }
 
             step_start = time.time()
@@ -741,7 +751,7 @@ class LiveExecutor:
                             "threadId": thread_id,
                             "decisions": [{"type": "approve"}],
                             "llmConfig": self.llm_config,
-                            "workspaceRoot": prompt.context.get("workspaceRoot", "."),
+                            "workspaceRoot": prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT),
                         }
 
                     result_thread_id, error, interrupt_info = await process_stream(
@@ -779,14 +789,20 @@ class LiveExecutor:
                                 "args": {"execution_result": tool_result},
                             }],
                             "llmConfig": self.llm_config,
-                            "workspaceRoot": prompt.context.get("workspaceRoot", "."),
+                            "workspaceRoot": prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT),
                         }
                         endpoint = f"{self.backend_url}/agent/langchain/resume"
 
                 duration_ms = int((time.time() - start_time) * 1000)
+
+                # Check for execution errors
+                has_errors = len(execution_errors) > 0
+                error_summary = "; ".join(execution_errors) if execution_errors else None
+
                 execution_result = ExecutionResult(
-                    success=True,
+                    success=not has_errors,
                     duration_ms=duration_ms,
+                    error=error_summary,
                     output=full_response,
                     code_generated="\n\n".join(all_code_generated),
                     steps=steps,
