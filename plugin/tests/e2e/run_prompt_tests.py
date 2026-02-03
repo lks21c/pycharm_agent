@@ -328,6 +328,13 @@ class LiveExecutor:
                     "apiKey": openai_config.get("apiKey", ""),
                     "model": openai_config.get("model", "gpt-4"),
                 }
+            elif provider == "vllm":
+                vllm_config = config.get("vllm", {})
+                llm_config["vllm"] = {
+                    "endpoint": vllm_config.get("endpoint", "http://localhost:8000"),
+                    "apiKey": vllm_config.get("apiKey", ""),
+                    "model": vllm_config.get("model", ""),
+                }
 
             return llm_config
         except Exception as e:
@@ -728,7 +735,8 @@ class LiveExecutor:
         try:
             # Use LangChain agent endpoint for full E2E
             endpoint = f"{self.backend_url}/agent/langchain/stream"
-            llm_config = {**self.llm_config, "autoApprove": True}
+            # Add clientType: pycharm to use file-based execution (no jupyter_cell)
+            llm_config = {**self.llm_config, "autoApprove": True, "clientType": "pycharm"}
             payload = {
                 "request": prompt.text,
                 "threadId": None,

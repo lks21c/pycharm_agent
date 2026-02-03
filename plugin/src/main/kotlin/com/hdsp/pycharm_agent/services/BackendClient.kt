@@ -67,6 +67,7 @@ class BackendClient(private val project: Project) {
 
         return mapOf(
             "provider" to settings.provider,
+            "clientType" to "pycharm",  // Use file-based execution (no jupyter_cell)
             "gemini" to when {
                 settings.provider == "gemini" && !geminiKey.isNullOrBlank() -> mapOf(
                     "apiKey" to geminiKey,
