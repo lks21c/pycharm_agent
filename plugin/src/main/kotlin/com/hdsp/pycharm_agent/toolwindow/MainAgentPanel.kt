@@ -6,6 +6,7 @@ import com.hdsp.pycharm_agent.settings.AgentSettingsConfigurable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.command.CommandProcessor
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
@@ -114,11 +115,23 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
     private var currentMode = InputMode.CHAT
     private val modeToggleButton = JButton()
     private val modeLabel = JLabel()
+    private val clientModeLabel = JLabel()
 
     init {
-        // Header with Settings button
+        // Header with client mode indicator and Settings button
         val headerPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(2, 5)
+            background = JBColor(Color(248, 249, 250), Color(40, 42, 46))
+
+            // Left: Client mode indicator
+            clientModeLabel.apply {
+                font = font.deriveFont(Font.BOLD, 11f)
+                border = JBUI.Borders.empty(0, 5)
+                updateClientModeLabel()
+            }
+            add(clientModeLabel, BorderLayout.WEST)
+
+            // Right: Settings button
             val settingsButton = JButton("⚙").apply {
                 toolTipText = "Open PyCharm Agent Settings"
                 preferredSize = Dimension(28, 28)
@@ -227,6 +240,35 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
         return false
     }
+
+    /**
+     * Update client mode label based on current adapter
+     */
+    private fun updateClientModeLabel() {
+        val factory = AgentClientFactory.getInstance(project)
+        val mode = factory.getCurrentMode()
+
+        val (icon, text, color) = when (mode) {
+            ClientMode.ACP -> Triple("🤖", "ACP", JBColor(Color(76, 175, 80), Color(129, 199, 132)))
+            ClientMode.OPENROUTER -> Triple("🌐", "OpenRouter", JBColor(Color(33, 150, 243), Color(100, 181, 246)))
+            ClientMode.LEGACY -> Triple("🔧", "Legacy", JBColor(Color(158, 158, 158), Color(189, 189, 189)))
+        }
+
+        clientModeLabel.text = "$icon $text"
+        clientModeLabel.foreground = color
+        clientModeLabel.toolTipText = when (mode) {
+            ClientMode.ACP -> "Using ACP Agent (External CLI)"
+            ClientMode.OPENROUTER -> "Using OpenRouter API directly"
+            ClientMode.LEGACY -> "Using Legacy Python Backend"
+        }
+    }
+
+    /**
+     * Refresh UI after settings change
+     */
+    fun refreshClientMode() {
+        updateClientModeLabel()
+    }
 }
 
 /**
@@ -234,6 +276,7 @@ class MainAgentPanel(private val project: Project) : JPanel(BorderLayout()) {
  */
 class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
+    private val log = Logger.getInstance(ChatPanel::class.java)
     private val statusBanner = ConnectionStatusBanner()
     private val messagesPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -249,6 +292,11 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private var lastAgentMessagePanel: MessagePanel? = null
     private var isServerConnected = false
+    private var currentSessionId: String? = null
+
+    // Get client adapter (ACP or Legacy based on settings)
+    private val clientAdapter: AgentClientAdapter
+        get() = AgentClientFactory.getInstance(project).getClient()
 
     init {
         // Status banner at top
@@ -305,15 +353,14 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun checkServerConnection() {
         statusBanner.updateStatus(
             ConnectionStatusBanner.Status.CHECKING,
-            "Checking server connection...",
+            "Checking agent connection...",
             retry = { checkServerConnection() }
         )
         setInputEnabled(false)
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val client = project.getService(BackendClient::class.java)
-                val isConnected = client.testConnectionSync()
+                val isConnected = clientAdapter.connect()
 
                 SwingUtilities.invokeLater {
                     isServerConnected = isConnected
@@ -321,15 +368,16 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
                         statusBanner.updateStatus(ConnectionStatusBanner.Status.CONNECTED)
                         setInputEnabled(true)
                     } else {
-                        val settings = AgentSettings.getInstance()
+                        val agentInfo = clientAdapter.getAgentInfoSummary()
                         statusBanner.updateStatus(
                             ConnectionStatusBanner.Status.DISCONNECTED,
-                            "Cannot connect to ${settings.backendUrl}",
+                            "Cannot connect to $agentInfo",
                             retry = { checkServerConnection() }
                         )
                     }
                 }
             } catch (e: Exception) {
+                log.warn("Connection check failed", e)
                 SwingUtilities.invokeLater {
                     isServerConnected = false
                     statusBanner.updateStatus(
@@ -348,7 +396,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         inputField.emptyText.text = if (enabled)
             "Type your message..."
         else
-            "Waiting for server connection..."
+            "Waiting for agent connection..."
     }
 
     private fun sendMessage() {
@@ -369,51 +417,55 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         val agentPanel = addAgentMessage("...")
         lastAgentMessagePanel = agentPanel
 
-        // Run in background thread
+        // Run in background thread using adapter
         ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                val client = project.getService(BackendClient::class.java)
-                val response = StringBuilder()
+            val response = StringBuilder()
 
-                client.streamChatSync(message) { chunk ->
+            clientAdapter.sendChatMessage(
+                message = message,
+                sessionId = currentSessionId,
+                onChunk = { chunk ->
                     response.append(chunk)
                     SwingUtilities.invokeLater {
                         lastAgentMessagePanel?.updateContent(response.toString())
                         scrollToBottom()
                     }
-                }
-
-                SwingUtilities.invokeLater {
-                    if (response.isEmpty()) {
-                        lastAgentMessagePanel?.updateContent("(No response)")
-                    }
-                    sendButton.isEnabled = true
-                }
-            } catch (e: Exception) {
-                SwingUtilities.invokeLater {
-                    // Show error in message panel with better formatting
-                    val errorMessage = when {
-                        e.message?.contains("timeout", ignoreCase = true) == true ->
-                            "⏱️ **Connection Timeout**\n\nThe server took too long to respond. Please try again."
-                        e.message?.contains("refused", ignoreCase = true) == true ||
-                        e.message?.contains("connect", ignoreCase = true) == true -> {
-                            isServerConnected = false
-                            statusBanner.updateStatus(
-                                ConnectionStatusBanner.Status.DISCONNECTED,
-                                "Server connection lost",
-                                retry = { checkServerConnection() }
-                            )
-                            "❌ **Connection Lost**\n\nThe server is no longer available. Please check if the backend is running."
+                },
+                onComplete = { chatResponse ->
+                    currentSessionId = chatResponse.sessionId
+                    SwingUtilities.invokeLater {
+                        if (response.isEmpty()) {
+                            lastAgentMessagePanel?.updateContent("(No response)")
                         }
-                        e.message?.contains("rate", ignoreCase = true) == true ->
-                            "⚠️ **Rate Limited**\n\nToo many requests. Please wait a moment and try again."
-                        else ->
-                            "❌ **Error**\n\n${e.message ?: "Unknown error occurred"}"
+                        sendButton.isEnabled = true
                     }
-                    lastAgentMessagePanel?.updateContent(errorMessage)
-                    sendButton.isEnabled = isServerConnected
+                },
+                onError = { error ->
+                    SwingUtilities.invokeLater {
+                        // Show error in message panel with better formatting
+                        val errorMessage = when {
+                            error.contains("timeout", ignoreCase = true) ->
+                                "⏱️ **Connection Timeout**\n\nThe agent took too long to respond. Please try again."
+                            error.contains("refused", ignoreCase = true) ||
+                            error.contains("connect", ignoreCase = true) -> {
+                                isServerConnected = false
+                                statusBanner.updateStatus(
+                                    ConnectionStatusBanner.Status.DISCONNECTED,
+                                    "Agent connection lost",
+                                    retry = { checkServerConnection() }
+                                )
+                                "❌ **Connection Lost**\n\nThe agent is no longer available. Please check your configuration."
+                            }
+                            error.contains("rate", ignoreCase = true) ->
+                                "⚠️ **Rate Limited**\n\nToo many requests. Please wait a moment and try again."
+                            else ->
+                                "❌ **Error**\n\n$error"
+                        }
+                        lastAgentMessagePanel?.updateContent(errorMessage)
+                        sendButton.isEnabled = isServerConnected
+                    }
                 }
-            }
+            )
         }
     }
 
@@ -788,6 +840,7 @@ class RoundedPanel(private val cornerRadius: Int) : JPanel() {
  */
 class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 
+    private val log = Logger.getInstance(AgentModePanel::class.java)
     private val statusBanner = ConnectionStatusBanner()
     private val requestArea = JBTextArea(3, 40).apply {
         lineWrap = true
@@ -795,6 +848,10 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
     }
     private val sendButton = JButton("Send")
     private val stopButton = JButton("Stop").apply { isEnabled = false }
+
+    // Get client adapter (ACP or Legacy based on settings)
+    private val clientAdapter: AgentClientAdapter
+        get() = AgentClientFactory.getInstance(project).getClient()
 
     // Response area (streaming) with Markdown rendering
     private val responseArea = JEditorPane().apply {
@@ -946,20 +1003,22 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 
         // Initial health check
         checkServerConnection()
+
+        // Set up permission handler for HITL
+        setupPermissionHandler()
     }
 
     private fun checkServerConnection() {
         statusBanner.updateStatus(
             ConnectionStatusBanner.Status.CHECKING,
-            "Checking server connection...",
+            "Checking agent connection...",
             retry = { checkServerConnection() }
         )
         setInputEnabled(false)
 
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val client = project.getService(BackendClient::class.java)
-                val isConnected = client.testConnectionSync()
+                val isConnected = clientAdapter.connect()
 
                 SwingUtilities.invokeLater {
                     isServerConnected = isConnected
@@ -967,15 +1026,16 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
                         statusBanner.updateStatus(ConnectionStatusBanner.Status.CONNECTED)
                         setInputEnabled(true)
                     } else {
-                        val settings = AgentSettings.getInstance()
+                        val agentInfo = clientAdapter.getAgentInfoSummary()
                         statusBanner.updateStatus(
                             ConnectionStatusBanner.Status.DISCONNECTED,
-                            "Cannot connect to ${settings.backendUrl}",
+                            "Cannot connect to $agentInfo",
                             retry = { checkServerConnection() }
                         )
                     }
                 }
             } catch (e: Exception) {
+                log.warn("Connection check failed", e)
                 SwingUtilities.invokeLater {
                     isServerConnected = false
                     statusBanner.updateStatus(
@@ -988,13 +1048,105 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    private fun setupPermissionHandler() {
+        clientAdapter.setPermissionHandler { request ->
+            val settings = AgentSettings.getInstance()
+
+            // Check auto-approve settings
+            val autoApprove = when (request.type) {
+                "read_file" -> settings.autoApproveRead
+                "write_file" -> settings.autoApproveWrite
+                "edit_file" -> settings.autoApproveWrite
+                "execute_command" -> settings.autoApproveShell
+                else -> false
+            }
+
+            if (autoApprove) {
+                log.info("Auto-approving ${request.type} for ${request.path ?: request.command}")
+                return@setPermissionHandler PermissionResult(granted = true)
+            }
+
+            // Show appropriate dialog based on permission type
+            // This runs on the calling thread, so we need to use invokeAndWait
+            var result = PermissionResult(granted = false)
+
+            SwingUtilities.invokeAndWait {
+                debugLabel.text = "⏸️ Waiting for approval: ${request.type}"
+
+                result = when (request.type) {
+                    "write_file" -> showWritePermissionDialog(request)
+                    "edit_file" -> showEditPermissionDialog(request)
+                    "execute_command" -> showCommandPermissionDialog(request)
+                    else -> {
+                        // Generic dialog for other types
+                        val approved = JOptionPane.showConfirmDialog(
+                            this@AgentModePanel,
+                            "${request.description}\n\nPath: ${request.path ?: request.command}",
+                            "Permission Request",
+                            JOptionPane.YES_NO_OPTION
+                        ) == JOptionPane.YES_OPTION
+                        PermissionResult(granted = approved)
+                    }
+                }
+            }
+
+            result
+        }
+    }
+
+    private fun showWritePermissionDialog(request: PermissionRequest): PermissionResult {
+        val dialog = FileOperationDialog(
+            project = project,
+            operationType = "write",
+            filePath = request.path ?: "",
+            newContent = request.content ?: "",
+            onApprove = {},
+            onReject = {}
+        )
+        return if (dialog.showAndGet()) {
+            PermissionResult(granted = true)
+        } else {
+            PermissionResult(granted = false, feedback = "User rejected write operation")
+        }
+    }
+
+    private fun showEditPermissionDialog(request: PermissionRequest): PermissionResult {
+        val dialog = FileOperationDialog(
+            project = project,
+            operationType = "edit",
+            filePath = request.path ?: "",
+            oldString = request.oldString ?: "",
+            newString = request.newString ?: "",
+            replaceAll = false,
+            onApprove = {},
+            onReject = {}
+        )
+        return if (dialog.showAndGet()) {
+            PermissionResult(granted = true)
+        } else {
+            PermissionResult(granted = false, feedback = "User rejected edit operation")
+        }
+    }
+
+    private fun showCommandPermissionDialog(request: PermissionRequest): PermissionResult {
+        val approved = JOptionPane.showConfirmDialog(
+            this,
+            "Execute command:\n\n${request.command}\n\n${request.description}",
+            "Command Execution Request",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        ) == JOptionPane.YES_OPTION
+
+        return PermissionResult(granted = approved)
+    }
+
     private fun setInputEnabled(enabled: Boolean) {
         requestArea.isEnabled = enabled
         sendButton.isEnabled = enabled && !isRunning
         requestArea.emptyText.text = if (enabled)
             "Describe what you want the agent to do... (Ctrl+Enter to send)"
         else
-            "Waiting for server connection..."
+            "Waiting for agent connection..."
     }
 
     private fun sendRequest() {
@@ -1023,101 +1175,113 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         executedOperations.clear()
         lastTodos = emptyList()
 
-        ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                val client = project.getService(BackendClient::class.java)
-                val responseBuilder = StringBuilder()
+        val responseBuilder = StringBuilder()
 
-                client.streamAgentSync(
-                    request = request,
-                    threadId = currentThreadId,
-                    notebookContext = null,
-                    onChunk = { chunk ->
-                        responseBuilder.append(chunk)
-                        SwingUtilities.invokeLater {
-                            updateResponseArea(responseBuilder.toString())
+        ApplicationManager.getApplication().executeOnPooledThread {
+            clientAdapter.sendAgentRequest(
+                request = request,
+                sessionId = currentThreadId,
+                onUpdate = { update ->
+                    when (update) {
+                        is AgentUpdate.Content -> {
+                            responseBuilder.append(update.text)
+                            SwingUtilities.invokeLater {
+                                updateResponseArea(responseBuilder.toString())
+                            }
                         }
-                    },
-                    onDebug = { status ->
-                        SwingUtilities.invokeLater {
-                            debugLabel.text = if (status.isEmpty()) " " else status
+                        is AgentUpdate.ToolCall -> {
+                            SwingUtilities.invokeLater {
+                                debugLabel.text = when (update.status) {
+                                    "started" -> "🔧 ${update.tool}"
+                                    "completed" -> "✓ ${update.tool}"
+                                    "error" -> "❌ ${update.tool}: ${update.result}"
+                                    else -> "🔧 ${update.tool} (${update.status})"
+                                }
+                            }
                         }
-                    },
-                    onInterrupt = { interrupt ->
-                        SwingUtilities.invokeLater {
-                            handleInterrupt(interrupt)
+                        is AgentUpdate.Todos -> {
+                            SwingUtilities.invokeLater {
+                                updateTodosFromAdapter(update.items)
+                            }
                         }
-                    },
-                    onTodos = { todos ->
-                        SwingUtilities.invokeLater {
-                            updateTodos(todos)
+                        is AgentUpdate.Status -> {
+                            SwingUtilities.invokeLater {
+                                debugLabel.text = if (update.message.isEmpty()) " " else update.message
+                            }
                         }
-                    },
-                    onToolCall = { toolCall ->
-                        SwingUtilities.invokeLater {
-                            debugLabel.text = "🔧 ${toolCall.tool}"
+                        is AgentUpdate.Plan -> {
+                            // Show plan in debug
+                            SwingUtilities.invokeLater {
+                                debugLabel.text = "📋 Step ${(update.currentStep ?: 0) + 1}/${update.steps.size}"
+                            }
                         }
-                    },
-                    onComplete = { threadId ->
-                        currentThreadId = threadId
-                        SwingUtilities.invokeLater {
-                            debugLabel.text = "Complete"
-                            // Process final response to extract and display next_items
-                            val finalContent = responseBuilder.toString()
-                            val cleanedContent = processResponseContent(finalContent)
-                            updateResponseArea(cleanedContent)
-                            finishAgent()
-                        }
-                    },
-                    onKeyRotation = { keyIndex, totalKeys ->
-                        SwingUtilities.invokeLater {
-                            keyStatusLabel.text = "Key ${keyIndex + 1}/$totalKeys"
+                        is AgentUpdate.TurnComplete -> {
+                            // Get session ID for next turn
+                            currentThreadId = clientAdapter.getCurrentSessionId()
                         }
                     }
-                )
+                },
+                onComplete = {
+                    SwingUtilities.invokeLater {
+                        debugLabel.text = "Complete"
+                        // Process final response to extract and display next_items
+                        val finalContent = responseBuilder.toString()
+                        val cleanedContent = processResponseContent(finalContent)
+                        updateResponseArea(cleanedContent)
+                        finishAgent()
+                    }
+                },
+                onError = { error ->
+                    SwingUtilities.invokeLater {
+                        // Check if it's a connection error
+                        val isConnectionError = error.contains("refused", ignoreCase = true) ||
+                                error.contains("connect", ignoreCase = true) ||
+                                error.contains("timeout", ignoreCase = true) ||
+                                error.contains("closed", ignoreCase = true)
 
-                // Safety net: If stream returned without error but agent still running,
-                // ensure we finish properly (handles edge cases like connection drops)
-                SwingUtilities.invokeLater {
-                    if (isRunning) {
-                        debugLabel.text = "Stream ended"
+                        if (isConnectionError) {
+                            isServerConnected = false
+                            statusBanner.updateStatus(
+                                ConnectionStatusBanner.Status.DISCONNECTED,
+                                "Agent connection lost",
+                                retry = { checkServerConnection() }
+                            )
+                            debugLabel.text = "❌ Connection lost"
+                            appendToResponseArea("\n\n❌ Connection Lost\n\nThe agent is no longer available. Please check your configuration.")
+                            markTodosAsInterrupted("Connection lost - file operations may not have completed")
+                        } else if (error.contains("rate", ignoreCase = true)) {
+                            debugLabel.text = "⚠️ Rate limited"
+                            appendToResponseArea("\n\n⚠️ Rate Limited\n\nAPI rate limit reached. Please wait and try again.")
+                            markTodosAsInterrupted("Rate limited - file operations may not have completed")
+                        } else {
+                            debugLabel.text = "Error: $error"
+                            appendToResponseArea("\n\n❌ Error\n\n$error")
+                            markTodosAsInterrupted("Error occurred - check operations were completed")
+                        }
                         finishAgent()
                     }
                 }
-            } catch (e: AllKeysRateLimitedException) {
-                SwingUtilities.invokeLater {
-                    debugLabel.text = "⚠️ All API keys rate limited"
-                    appendToResponseArea("\n\n⚠️ Rate Limited\n\nAll API keys are rate limited. Please wait and try again.")
-                    markTodosAsInterrupted("Rate limited - file operations may not have completed")
-                    finishAgent()
-                }
-            } catch (e: Exception) {
-                SwingUtilities.invokeLater {
-                    // Check if it's a connection error
-                    val isConnectionError = e.message?.contains("refused", ignoreCase = true) == true ||
-                            e.message?.contains("connect", ignoreCase = true) == true ||
-                            e.message?.contains("timeout", ignoreCase = true) == true ||
-                            e.message?.contains("closed", ignoreCase = true) == true
+            )
+        }
+    }
 
-                    if (isConnectionError) {
-                        isServerConnected = false
-                        statusBanner.updateStatus(
-                            ConnectionStatusBanner.Status.DISCONNECTED,
-                            "Server connection lost",
-                            retry = { checkServerConnection() }
-                        )
-                        debugLabel.text = "❌ Connection lost"
-                        appendToResponseArea("\n\n❌ Connection Lost\n\nThe server is no longer available. Please check if the backend is running.")
-                        markTodosAsInterrupted("Connection lost - file operations may not have completed")
-                    } else {
-                        debugLabel.text = "Error: ${e.message}"
-                        appendToResponseArea("\n\n❌ Error\n\n${e.message ?: "Unknown error occurred"}")
-                        markTodosAsInterrupted("Error occurred - check operations were completed")
-                    }
-                    finishAgent()
+    private fun updateTodosFromAdapter(items: List<TodoItem>) {
+        todosPanel.removeAll()
+        items.forEach { item ->
+            val checkbox = JCheckBox(item.content).apply {
+                isSelected = item.status == "completed"
+                isEnabled = false
+                foreground = when (item.status) {
+                    "completed" -> JBColor.GREEN
+                    "in_progress" -> JBColor.ORANGE
+                    "failed" -> JBColor.RED
+                    else -> JBColor.foreground()
                 }
             }
+            todosPanel.add(checkbox)
         }
+        todosPanel.revalidate()
+        todosPanel.repaint()
     }
 
     private fun handleInterrupt(interrupt: AgentInterrupt) {
@@ -1534,101 +1698,19 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    /**
+     * Resume agent after HITL decision.
+     * NOTE: This is now handled by the adapter's permission handler.
+     * This method is kept for backward compatibility with legacy dialogs
+     * but the actual resume is handled internally by the adapter.
+     */
     private fun resumeAgent(decision: String, args: Map<String, Any>?, feedback: String?) {
-        val threadId = currentThreadId ?: return
         pendingInterrupt = null
-
-        debugLabel.text = "Resuming with decision: $decision"
-
-        ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                val client = project.getService(BackendClient::class.java)
-                val responseBuilder = StringBuilder(rawResponseContent.toString())
-
-                client.resumeAgentSync(
-                    threadId = threadId,
-                    decision = decision,
-                    args = args,
-                    feedback = feedback,
-                    onChunk = { chunk ->
-                        responseBuilder.append(chunk)
-                        SwingUtilities.invokeLater {
-                            updateResponseArea(responseBuilder.toString())
-                        }
-                    },
-                    onDebug = { status ->
-                        SwingUtilities.invokeLater {
-                            debugLabel.text = if (status.isEmpty()) " " else status
-                        }
-                    },
-                    onInterrupt = { interrupt ->
-                        SwingUtilities.invokeLater {
-                            handleInterrupt(interrupt)
-                        }
-                    },
-                    onTodos = { todos ->
-                        SwingUtilities.invokeLater {
-                            updateTodos(todos)
-                        }
-                    },
-                    onToolCall = { toolCall ->
-                        SwingUtilities.invokeLater {
-                            debugLabel.text = "🔧 ${toolCall.tool}"
-                        }
-                    },
-                    onComplete = { newThreadId ->
-                        currentThreadId = newThreadId
-                        SwingUtilities.invokeLater {
-                            debugLabel.text = "Complete"
-                            // Process final response to extract and display next_items
-                            val finalContent = responseBuilder.toString()
-                            val cleanedContent = processResponseContent(finalContent)
-                            updateResponseArea(cleanedContent)
-                            finishAgent()
-                        }
-                    },
-                    onKeyRotation = { keyIndex, totalKeys ->
-                        SwingUtilities.invokeLater {
-                            keyStatusLabel.text = "Key ${keyIndex + 1}/$totalKeys"
-                        }
-                    }
-                )
-
-                // Safety net: If stream returned without error but agent still running,
-                // ensure we finish properly (handles edge cases like connection drops)
-                SwingUtilities.invokeLater {
-                    if (isRunning) {
-                        debugLabel.text = "Stream ended"
-                        finishAgent()
-                    }
-                }
-            } catch (e: Exception) {
-                SwingUtilities.invokeLater {
-                    // Check if it's a connection error
-                    val isConnectionError = e.message?.contains("refused", ignoreCase = true) == true ||
-                            e.message?.contains("connect", ignoreCase = true) == true ||
-                            e.message?.contains("timeout", ignoreCase = true) == true ||
-                            e.message?.contains("closed", ignoreCase = true) == true
-
-                    if (isConnectionError) {
-                        isServerConnected = false
-                        statusBanner.updateStatus(
-                            ConnectionStatusBanner.Status.DISCONNECTED,
-                            "Server connection lost",
-                            retry = { checkServerConnection() }
-                        )
-                        debugLabel.text = "❌ Connection lost"
-                        appendToResponseArea("\n\n❌ Connection Lost\n\nThe server is no longer available. Please check if the backend is running.")
-                        markTodosAsInterrupted("Connection lost during resume - file operations may not have completed")
-                    } else {
-                        debugLabel.text = "Resume error: ${e.message}"
-                        appendToResponseArea("\n\n❌ Resume Error\n\n${e.message ?: "Unknown error occurred"}")
-                        markTodosAsInterrupted("Resume error - check operations were completed")
-                    }
-                    finishAgent()
-                }
-            }
-        }
+        debugLabel.text = "Decision: $decision"
+        log.info("resumeAgent called with decision=$decision (now handled by adapter)")
+        // The adapter handles the actual resume through its permission handler callback
+        // This method is called from legacy dialog callbacks but the response has already
+        // been handled synchronously by the permission handler
     }
 
     private fun updateTodos(todos: List<TodoItem>) {
@@ -1787,12 +1869,15 @@ class AgentModePanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun stopAgent() {
         isRunning = false
+        // Cancel current operation through adapter
+        clientAdapter.cancelCurrentOperation(currentThreadId)
+        debugLabel.text = "Stopped"
         finishAgent()
     }
 
     private fun finishAgent() {
         isRunning = false
-        sendButton.isEnabled = true
+        sendButton.isEnabled = isServerConnected
         stopButton.isEnabled = false
     }
 

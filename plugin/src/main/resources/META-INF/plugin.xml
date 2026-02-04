@@ -11,13 +11,15 @@
         <li><b>Chat Mode</b>: Ask questions and get code snippets</li>
         <li><b>Agent Mode</b>: Automatic code modifications with diff preview</li>
         <li>GitHub Copilot-style inline diff preview</li>
-        <li>Support for Gemini, OpenAI, and vLLM</li>
+        <li><b>ACP Support</b>: Use Claude Code, Codex CLI, or any ACP-compatible agent</li>
+        <li><b>OpenRouter Integration</b>: Access 300+ AI models through unified API</li>
+        <li>Support for Gemini, OpenAI, and vLLM (legacy mode)</li>
     </ul>
 
     <h3>Usage:</h3>
     <ol>
         <li>Open the PyCharm Agent tool window (View → Tool Windows → PyCharm Agent)</li>
-        <li>Configure your API key in Settings → PyCharm Agent</li>
+        <li>Configure your ACP agent or OpenRouter API key in Settings → PyCharm Agent</li>
         <li>Start chatting or use Agent mode for automatic code changes</li>
     </ol>
     ]]></description>
@@ -43,12 +45,42 @@
         <applicationService
                 serviceImplementation="com.hdsp.pycharm_agent.settings.AgentSettings"/>
 
-        <!-- Project Service -->
+        <applicationService
+                serviceImplementation="com.hdsp.pycharm_agent.settings.SettingsChangeNotifier"/>
+
+        <!-- Project Services -->
+        <!-- Legacy Backend Client (for backward compatibility) -->
         <projectService
                 serviceImplementation="com.hdsp.pycharm_agent.services.BackendClient"/>
 
         <projectService
                 serviceImplementation="com.hdsp.pycharm_agent.services.DiffApplicationService"/>
+
+        <!-- ACP Client Service (new architecture) -->
+        <projectService
+                serviceImplementation="com.hdsp.pycharm_agent.acp.ACPClientService"/>
+
+        <!-- ACP Session Manager -->
+        <projectService
+                serviceImplementation="com.hdsp.pycharm_agent.acp.ACPSessionManager"/>
+
+        <!-- OpenRouter Service (direct LLM API access) -->
+        <projectService
+                serviceImplementation="com.hdsp.pycharm_agent.openrouter.OpenRouterService"/>
+
+        <!-- Agent Client Factory (abstracts ACP vs OpenRouter vs Legacy) -->
+        <projectService
+                serviceImplementation="com.hdsp.pycharm_agent.services.AgentClientFactory"/>
+
+        <!-- Status Bar Widget -->
+        <statusBarWidgetFactory
+                id="PyCharmAgentMode"
+                implementation="com.hdsp.pycharm_agent.ui.AgentModeStatusWidgetFactory"
+                order="after Position"/>
+
+        <!-- Startup Activity -->
+        <postStartupActivity
+                implementation="com.hdsp.pycharm_agent.startup.AgentStartupActivity"/>
     </extensions>
 
     <actions>
@@ -75,5 +107,18 @@
                 text="Reject Agent Change">
             <keyboard-shortcut keymap="$default" first-keystroke="ESCAPE"/>
         </action>
+
+        <!-- PyCharm Agent Tools Menu Group -->
+        <group id="PyCharmAgent.ToolsMenu" text="PyCharm Agent" popup="true">
+            <action id="PyCharmAgent.TestConnection"
+                    class="com.hdsp.pycharm_agent.actions.TestConnectionAction"
+                    text="Test Connection"
+                    description="Test connections to configured AI services"/>
+            <action id="PyCharmAgent.RunDiagnostics"
+                    class="com.hdsp.pycharm_agent.actions.RunDiagnosticsAction"
+                    text="Run Diagnostics"
+                    description="Run comprehensive diagnostics to check plugin configuration and health"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </group>
     </actions>
 </idea-plugin>

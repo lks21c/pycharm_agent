@@ -1,0 +1,35 @@
+code_generated: ''
+duration_ms: 10591
+error: null
+executor: acp
+output: Invalid API key · Fix external API key
+prompt_hash: ca80eac10c2ff3b6
+prompt_text: What is 2+2? Reply with just the number.
+recorded_at: '2026-02-04T08:40:20.495112+00:00'
+steps:
+- code: ''
+  description: Starting ACP agent subprocess
+  details:
+    agent_path: /Users/a453180/.local/bin/claude
+  duration_ms: 0
+  output: ''
+  phase: prepare
+  start_time_ms: 0
+- code: ''
+  description: Sent prompt to agent
+  details: {}
+  duration_ms: 2
+  output: ''
+  phase: request
+  start_time_ms: 0
+- code: ''
+  description: Processed agent output
+  details:
+    lines_processed: 2
+  duration_ms: 10589
+  output: ''
+  phase: stream
+  start_time_ms: 2
+success: true
+tokens_input: 0
+tokens_output: 0

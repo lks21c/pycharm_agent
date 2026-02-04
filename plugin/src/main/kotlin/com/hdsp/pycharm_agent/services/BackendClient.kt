@@ -180,6 +180,30 @@ class BackendClient(private val project: Project) {
     }
 
     // ==========================================================================
+    // Health Check API
+    // ==========================================================================
+
+    /**
+     * Check if backend server is healthy and responsive
+     *
+     * @return true if server responds successfully
+     */
+    fun checkHealth(): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url("${getBaseUrl()}/health")
+                .get()
+                .build()
+
+            val response = client.newCall(request).execute()
+            response.isSuccessful
+        } catch (e: Exception) {
+            logger.warn("Health check failed: ${e.message}")
+            false
+        }
+    }
+
+    // ==========================================================================
     // Chat API (Simple Q&A) - /chat/stream
     // ==========================================================================
 

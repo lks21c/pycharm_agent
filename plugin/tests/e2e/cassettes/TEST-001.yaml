@@ -1,0 +1,37 @@
+code_generated: ''
+duration_ms: 13048
+error: 'stderr: Error: When using --print, --output-format=stream-json requires --verbose
+
+  '
+executor: acp
+output: ''
+prompt_hash: ca80eac10c2ff3b6
+prompt_text: What is 2+2? Reply with just the number.
+recorded_at: '2026-02-04T08:39:49.544118+00:00'
+steps:
+- code: ''
+  description: Starting ACP agent subprocess
+  details:
+    agent_path: /Users/a453180/.local/bin/claude
+  duration_ms: 0
+  output: ''
+  phase: prepare
+  start_time_ms: 0
+- code: ''
+  description: Sent prompt to agent
+  details: {}
+  duration_ms: 1
+  output: ''
+  phase: request
+  start_time_ms: 0
+- code: ''
+  description: Processed agent output
+  details:
+    lines_processed: 2
+  duration_ms: 13046
+  output: ''
+  phase: stream
+  start_time_ms: 2
+success: false
+tokens_input: 0
+tokens_output: 0

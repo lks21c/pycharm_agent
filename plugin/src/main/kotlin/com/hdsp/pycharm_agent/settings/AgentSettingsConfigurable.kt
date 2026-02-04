@@ -1,74 +1,86 @@
 package com.hdsp.pycharm_agent.settings
 
 import com.google.gson.Gson
-import com.google.gson.JsonObject
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
-import com.intellij.ui.table.JBTable
+import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
 import java.util.concurrent.TimeUnit
-import com.intellij.ui.components.JBTextArea
 import javax.swing.*
-import javax.swing.table.DefaultTableModel
 
 /**
  * Settings UI for PyCharm Agent plugin
- * Dynamic provider-specific settings with multi-key Gemini support
+ *
+ * Supports two modes:
+ * 1. ACP Mode (recommended): External ACP-compatible CLI agent
+ * 2. Legacy Mode (deprecated): Python FastAPI backend
  */
 class AgentSettingsConfigurable : Configurable {
 
     private var mainPanel: JPanel? = null
 
-    // Backend settings
-    private var backendUrlField: JBTextField? = null
-    private var testBackendButton: JButton? = null
+    // Mode selection
+    private var acpModeRadio: JRadioButton? = null
+    private var legacyModeRadio: JRadioButton? = null
+    private var modeCardsPanel: JPanel? = null
+    private var modeCardLayout: CardLayout? = null
 
-    // Provider selection
-    private var providerCombo: JComboBox<String>? = null
-    private var providerCardsPanel: JPanel? = null
-    private var providerCardLayout: CardLayout? = null
+    // ACP Agent settings
+    private var acpAgentPathField: TextFieldWithBrowseButton? = null
+    private var acpAgentArgsField: JBTextField? = null
+    private var acpAutoStartCheckbox: JCheckBox? = null
+    private var acpAutoRestartCheckbox: JCheckBox? = null
+    private var acpHealthCheckIntervalField: JBTextField? = null
+    private var testAcpAgentButton: JButton? = null
 
-    // Gemini settings
+    // OpenRouter settings
+    private var openrouterApiKeyField: JBPasswordField? = null
+    private var openrouterModelCombo: JComboBox<String>? = null
+    private var openrouterBaseUrlField: JBTextField? = null
+    private var useOpenRouterDirectCheckbox: JCheckBox? = null
+    private var openrouterSystemPromptField: JBTextArea? = null
+    private var testOpenrouterButton: JButton? = null
+
+    // Direct Provider Fallback
+    private var enableDirectProvidersCheckbox: JCheckBox? = null
+    private var geminiApiKeyField: JBPasswordField? = null
     private var geminiModelCombo: JComboBox<String>? = null
-    private var geminiKeysTableModel: DefaultTableModel? = null
-    private var geminiKeysTable: JBTable? = null
-    private var newGeminiKeyField: JBPasswordField? = null
-    private var addGeminiKeyButton: JButton? = null
-    private var removeGeminiKeyButton: JButton? = null
-    private var testGeminiKeysButton: JButton? = null
-
-    // OpenAI settings
     private var openaiApiKeyField: JBPasswordField? = null
     private var openaiModelCombo: JComboBox<String>? = null
-    private var testOpenaiButton: JButton? = null
+    private var directProvidersPanel: JPanel? = null
 
-    // vLLM settings
-    private var vllmEndpointField: JBTextField? = null
-    private var vllmModelField: JBTextField? = null
-    private var vllmApiKeyField: JBPasswordField? = null
-    private var testVllmButton: JButton? = null
-
-    // Agent behavior
-    private var autoExecuteCheckbox: JCheckBox? = null
-    private var autoApproveCheckbox: JCheckBox? = null
+    // HITL settings
+    private var autoApproveReadCheckbox: JCheckBox? = null
+    private var autoApproveWriteCheckbox: JCheckBox? = null
+    private var autoApproveShellCheckbox: JCheckBox? = null
+    private var showDiffPreviewCheckbox: JCheckBox? = null
+    private var diffPreviewTimeoutField: JBTextField? = null
 
     // Advanced settings
+    private var defaultModeCombo: JComboBox<String>? = null
     private var workspaceRootField: JBTextField? = null
     private var systemPromptArea: JBTextArea? = null
     private var idleTimeoutField: JBTextField? = null
+
+    // Legacy settings (deprecated)
+    private var backendUrlField: JBTextField? = null
+    private var testBackendButton: JButton? = null
+    private var legacyAutoApproveCheckbox: JCheckBox? = null
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -83,291 +95,538 @@ class AgentSettingsConfigurable : Configurable {
         mainPanel = JPanel(BorderLayout(0, JBUI.scale(10)))
         mainPanel!!.border = JBUI.Borders.empty(10)
 
-        // Backend URL section
-        val backendPanel = createBackendPanel()
+        // Mode selection panel
+        val modeSelectionPanel = createModeSelectionPanel()
 
-        // Provider selection section
-        val providerPanel = createProviderSelectionPanel()
+        // Cards for ACP and Legacy modes
+        modeCardsPanel = JPanel(CardLayout().also { modeCardLayout = it })
+        modeCardsPanel!!.add(createAcpModePanel(), "acp")
+        modeCardsPanel!!.add(createLegacyModePanel(), "legacy")
 
-        // Provider-specific settings (CardLayout)
-        providerCardsPanel = JPanel(CardLayout().also { providerCardLayout = it })
-        providerCardsPanel!!.add(createGeminiPanel(), "gemini")
-        providerCardsPanel!!.add(createOpenAIPanel(), "openai")
-        providerCardsPanel!!.add(createVLLMPanel(), "vllm")
+        // Scrollable content
+        val contentPanel = JPanel(BorderLayout(0, JBUI.scale(10)))
+        contentPanel.add(modeSelectionPanel, BorderLayout.NORTH)
+        contentPanel.add(modeCardsPanel!!, BorderLayout.CENTER)
 
-        // Advanced settings panel
-        val advancedPanel = createAdvancedPanel()
+        val scrollPane = JBScrollPane(contentPanel)
+        scrollPane.border = null
 
-        // Main layout with vertical split
-        val topPanel = JPanel()
-        topPanel.layout = BoxLayout(topPanel, BoxLayout.Y_AXIS)
-        topPanel.add(backendPanel)
-        topPanel.add(Box.createVerticalStrut(JBUI.scale(10)))
-        topPanel.add(providerPanel)
+        mainPanel!!.add(scrollPane, BorderLayout.CENTER)
 
-        // Center panel with provider cards and advanced settings
-        val centerPanel = JPanel(BorderLayout(0, JBUI.scale(10)))
-        centerPanel.add(providerCardsPanel!!, BorderLayout.CENTER)
-        centerPanel.add(advancedPanel, BorderLayout.SOUTH)
-
-        mainPanel!!.add(topPanel, BorderLayout.NORTH)
-        mainPanel!!.add(centerPanel, BorderLayout.CENTER)
-
-        // Set initial provider card
-        providerCombo?.addActionListener {
-            val selected = providerCombo?.selectedItem as? String ?: "gemini"
-            providerCardLayout?.show(providerCardsPanel, selected)
+        // Add mode change listeners
+        acpModeRadio?.addActionListener {
+            modeCardLayout?.show(modeCardsPanel, "acp")
+        }
+        legacyModeRadio?.addActionListener {
+            modeCardLayout?.show(modeCardsPanel, "legacy")
         }
 
         return mainPanel!!
     }
 
-    private fun createBackendPanel(): JPanel {
-        val panel = JPanel(BorderLayout(JBUI.scale(10), 0))
-        panel.border = BorderFactory.createTitledBorder("Backend Server (HDSP Agent)")
-
-        backendUrlField = JBTextField()
-        backendUrlField!!.preferredSize = Dimension(300, backendUrlField!!.preferredSize.height)
-
-        testBackendButton = JButton("Test Connection").apply {
-            addActionListener { testBackendConnection() }
-        }
-
-        val inputPanel = JPanel(BorderLayout(JBUI.scale(5), 0))
-        inputPanel.add(JBLabel("Backend URL:"), BorderLayout.WEST)
-        inputPanel.add(backendUrlField!!, BorderLayout.CENTER)
-        inputPanel.add(testBackendButton!!, BorderLayout.EAST)
-
-        // Agent behavior options
-        autoExecuteCheckbox = JCheckBox("Auto-execute mode (execute all steps automatically)")
-        autoApproveCheckbox = JCheckBox("Auto-approve tool execution (HITL bypass)")
-
-        val optionsPanel = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-
-            val row1 = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(autoExecuteCheckbox)
-            }
-            val row2 = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(autoApproveCheckbox)
-            }
-            add(row1)
-            add(row2)
-        }
-
-        val mainPanel = JPanel()
-        mainPanel.layout = BoxLayout(mainPanel, BoxLayout.Y_AXIS)
-        mainPanel.add(inputPanel)
-        mainPanel.add(Box.createVerticalStrut(JBUI.scale(5)))
-        mainPanel.add(optionsPanel)
-
-        panel.add(mainPanel, BorderLayout.CENTER)
-
-        return panel
-    }
-
-    private fun createProviderSelectionPanel(): JPanel {
+    private fun createModeSelectionPanel(): JPanel {
         val panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        panel.border = BorderFactory.createTitledBorder("Agent Mode")
 
-        panel.add(JBLabel("LLM Provider:"))
-        providerCombo = JComboBox(arrayOf("gemini", "openai", "vllm"))
-        panel.add(providerCombo!!)
+        acpModeRadio = JRadioButton("ACP Mode (Recommended)").apply {
+            toolTipText = "Use external ACP-compatible CLI agent (Claude Code, Codex CLI, etc.)"
+        }
+        legacyModeRadio = JRadioButton("Legacy Mode (Deprecated)").apply {
+            toolTipText = "Use Python FastAPI backend (requires separate server)"
+        }
+
+        val modeGroup = ButtonGroup()
+        modeGroup.add(acpModeRadio)
+        modeGroup.add(legacyModeRadio)
+
+        panel.add(acpModeRadio)
+        panel.add(Box.createHorizontalStrut(JBUI.scale(20)))
+        panel.add(legacyModeRadio)
 
         return panel
     }
 
-    private fun createGeminiPanel(): JPanel {
-        val panel = JPanel(BorderLayout(0, JBUI.scale(10)))
-        panel.border = BorderFactory.createTitledBorder("Gemini Settings")
+    private fun createAcpModePanel(): JPanel {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
 
-        // Model selection
-        val modelPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        modelPanel.add(JBLabel("Model:"))
+        // Essential Settings (simplified)
+        panel.add(createEssentialSettingsPanel())
+        panel.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+        // Advanced Settings (collapsible)
+        panel.add(createAdvancedSettingsCollapsible())
+
+        return panel
+    }
+
+    private fun createEssentialSettingsPanel(): JPanel {
+        val panel = JPanel(GridBagLayout())
+        panel.border = BorderFactory.createTitledBorder("Essential Settings")
+        val gbc = GridBagConstraints().apply {
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(5)
+        }
+
+        // ACP Agent Path
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+        panel.add(JBLabel("Agent Path:"), gbc)
+
+        acpAgentPathField = TextFieldWithBrowseButton().apply {
+            addBrowseFolderListener(
+                "Select ACP Agent",
+                "Select the ACP-compatible agent executable (e.g., claude, codex)",
+                null,
+                FileChooserDescriptor(true, false, false, false, false, false)
+            )
+            textField.toolTipText = "Path to ACP agent: claude, codex, or custom agent"
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(acpAgentPathField!!, gbc)
+
+        // Test Agent Button
+        gbc.gridx = 2; gbc.weightx = 0.0
+        testAcpAgentButton = JButton("Test").apply {
+            addActionListener { testAcpAgent() }
+        }
+        panel.add(testAcpAgentButton!!, gbc)
+
+        // OpenRouter API Key
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
+        panel.add(JBLabel("OpenRouter API Key:"), gbc)
+
+        openrouterApiKeyField = JBPasswordField().apply {
+            emptyText.text = "sk-or-v1-..."
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(openrouterApiKeyField!!, gbc)
+
+        // Test API Button
+        gbc.gridx = 2; gbc.weightx = 0.0
+        testOpenrouterButton = JButton("Test").apply {
+            addActionListener { testOpenRouterKey() }
+        }
+        panel.add(testOpenrouterButton!!, gbc)
+
+        // Model Selection
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0
+        panel.add(JBLabel("Model:"), gbc)
+
+        openrouterModelCombo = JComboBox(AgentSettings.OPENROUTER_MODELS.map { it.first }.toTypedArray()).apply {
+            isEditable = true
+            toolTipText = "Select or enter OpenRouter model ID"
+        }
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.weightx = 1.0
+        panel.add(openrouterModelCombo!!, gbc)
+
+        // Use OpenRouter Direct checkbox
+        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3
+        useOpenRouterDirectCheckbox = JCheckBox("Use OpenRouter directly (without ACP agent for chat)").apply {
+            toolTipText = "Chat mode uses OpenRouter API directly; Agent mode still requires ACP agent"
+        }
+        panel.add(useOpenRouterDirectCheckbox!!, gbc)
+
+        // Help link
+        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 3
+        val helpPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        helpPanel.add(JBLabel("<html><small><a href='https://openrouter.ai/keys'>Get OpenRouter API Key</a></small></html>"))
+        panel.add(helpPanel, gbc)
+
+        return panel
+    }
+
+    private var advancedPanel: JPanel? = null
+    private var advancedToggleButton: JButton? = null
+
+    private fun createAdvancedSettingsCollapsible(): JPanel {
+        val outerPanel = JPanel(BorderLayout())
+
+        // Toggle button
+        advancedToggleButton = JButton("▶ Advanced Settings").apply {
+            horizontalAlignment = SwingConstants.LEFT
+            isBorderPainted = false
+            isContentAreaFilled = false
+            addActionListener {
+                val isVisible = advancedPanel?.isVisible ?: false
+                advancedPanel?.isVisible = !isVisible
+                text = if (!isVisible) "▼ Advanced Settings" else "▶ Advanced Settings"
+            }
+        }
+        outerPanel.add(advancedToggleButton!!, BorderLayout.NORTH)
+
+        // Advanced settings panel (initially hidden)
+        advancedPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isVisible = false
+            border = JBUI.Borders.emptyLeft(20)
+        }
+
+        // ACP Agent Advanced
+        advancedPanel!!.add(createAcpAgentAdvancedPanel())
+        advancedPanel!!.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+        // OpenRouter Advanced
+        advancedPanel!!.add(createOpenRouterAdvancedPanel())
+        advancedPanel!!.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+        // Direct Provider Fallback
+        advancedPanel!!.add(createDirectProvidersPanel())
+        advancedPanel!!.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+        // HITL Configuration
+        advancedPanel!!.add(createHitlPanel())
+        advancedPanel!!.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+        // Other Advanced
+        advancedPanel!!.add(createAdvancedPanel())
+
+        outerPanel.add(advancedPanel!!, BorderLayout.CENTER)
+
+        return outerPanel
+    }
+
+    private fun createAcpAgentAdvancedPanel(): JPanel {
+        val panel = JPanel(GridBagLayout())
+        panel.border = BorderFactory.createTitledBorder("ACP Agent (Advanced)")
+        val gbc = GridBagConstraints().apply {
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(3)
+        }
+
+        // Agent Arguments
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+        panel.add(JBLabel("Arguments:"), gbc)
+
+        acpAgentArgsField = JBTextField().apply {
+            emptyText.text = "--acp (space-separated)"
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(acpAgentArgsField!!, gbc)
+
+        // Health Check Interval
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
+        panel.add(JBLabel("Health Check (sec):"), gbc)
+
+        acpHealthCheckIntervalField = JBTextField(5).apply {
+            text = "30"
+            toolTipText = "0 = disabled"
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(acpHealthCheckIntervalField!!, gbc)
+
+        // Checkboxes
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2
+        val checkboxPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        acpAutoStartCheckbox = JCheckBox("Auto-start").apply { isSelected = true }
+        acpAutoRestartCheckbox = JCheckBox("Auto-restart on crash").apply { isSelected = true }
+        checkboxPanel.add(acpAutoStartCheckbox)
+        checkboxPanel.add(Box.createHorizontalStrut(JBUI.scale(15)))
+        checkboxPanel.add(acpAutoRestartCheckbox)
+        panel.add(checkboxPanel, gbc)
+
+        return panel
+    }
+
+    private fun createOpenRouterAdvancedPanel(): JPanel {
+        val panel = JPanel(GridBagLayout())
+        panel.border = BorderFactory.createTitledBorder("OpenRouter (Advanced)")
+        val gbc = GridBagConstraints().apply {
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(3)
+        }
+
+        // Base URL
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+        panel.add(JBLabel("Base URL:"), gbc)
+
+        openrouterBaseUrlField = JBTextField().apply {
+            text = "https://openrouter.ai/api/v1"
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(openrouterBaseUrlField!!, gbc)
+
+        // System Prompt
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0; gbc.anchor = GridBagConstraints.NORTHWEST
+        panel.add(JBLabel("System Prompt:"), gbc)
+
+        openrouterSystemPromptField = JBTextArea(2, 40).apply {
+            lineWrap = true
+            wrapStyleWord = true
+            emptyText.text = "Optional custom instructions"
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0; gbc.fill = GridBagConstraints.BOTH
+        panel.add(JBScrollPane(openrouterSystemPromptField), gbc)
+
+        return panel
+    }
+
+    private fun createDirectProvidersPanel(): JPanel {
+        val outerPanel = JPanel(BorderLayout())
+        outerPanel.border = BorderFactory.createTitledBorder("Direct Provider Fallback (Optional)")
+
+        // Enable checkbox
+        enableDirectProvidersCheckbox = JCheckBox("Enable direct provider fallback when OpenRouter unavailable").apply {
+            addActionListener {
+                directProvidersPanel?.isVisible = isSelected
+            }
+        }
+        outerPanel.add(enableDirectProvidersCheckbox!!, BorderLayout.NORTH)
+
+        // Provider settings (initially hidden)
+        directProvidersPanel = JPanel(GridBagLayout()).apply {
+            isVisible = false
+        }
+        val gbc = GridBagConstraints().apply {
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(3)
+        }
+
+        // Gemini
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+        directProvidersPanel!!.add(JBLabel("Gemini API Key:"), gbc)
+
+        geminiApiKeyField = JBPasswordField().apply {
+            emptyText.text = "AIza..."
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0
+        directProvidersPanel!!.add(geminiApiKeyField!!, gbc)
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
+        directProvidersPanel!!.add(JBLabel("Gemini Model:"), gbc)
+
         geminiModelCombo = JComboBox(arrayOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"))
-        modelPanel.add(geminiModelCombo!!)
+        gbc.gridx = 1; gbc.weightx = 1.0
+        directProvidersPanel!!.add(geminiModelCombo!!, gbc)
 
-        // API Keys table
-        geminiKeysTableModel = object : DefaultTableModel(arrayOf("No.", "API Key (masked)", "Status"), 0) {
-            override fun isCellEditable(row: Int, column: Int) = false
+        // OpenAI
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0
+        directProvidersPanel!!.add(JBLabel("OpenAI API Key:"), gbc)
+
+        openaiApiKeyField = JBPasswordField().apply {
+            emptyText.text = "sk-..."
         }
-        geminiKeysTable = JBTable(geminiKeysTableModel!!)
-        geminiKeysTable!!.columnModel.getColumn(0).preferredWidth = 40
-        geminiKeysTable!!.columnModel.getColumn(1).preferredWidth = 200
-        geminiKeysTable!!.columnModel.getColumn(2).preferredWidth = 100
+        gbc.gridx = 1; gbc.weightx = 1.0
+        directProvidersPanel!!.add(openaiApiKeyField!!, gbc)
 
-        val tableScrollPane = JBScrollPane(geminiKeysTable)
-        tableScrollPane.preferredSize = Dimension(400, 150)
+        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0
+        directProvidersPanel!!.add(JBLabel("OpenAI Model:"), gbc)
 
-        // Add key controls
-        val addKeyPanel = JPanel(BorderLayout(JBUI.scale(5), 0))
-        newGeminiKeyField = JBPasswordField()
-        newGeminiKeyField!!.emptyText.text = "Enter new API key (AIza...)"
-
-        addGeminiKeyButton = JButton("Add").apply {
-            addActionListener { addGeminiKey() }
-        }
-        removeGeminiKeyButton = JButton("Remove").apply {
-            addActionListener { removeGeminiKey() }
-        }
-        testGeminiKeysButton = JButton("Test All Keys").apply {
-            addActionListener { testGeminiKeys() }
-        }
-
-        addKeyPanel.add(newGeminiKeyField!!, BorderLayout.CENTER)
-
-        val buttonPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        buttonPanel.add(addGeminiKeyButton!!)
-        buttonPanel.add(removeGeminiKeyButton!!)
-        buttonPanel.add(testGeminiKeysButton!!)
-
-        val keysPanel = JPanel(BorderLayout(0, JBUI.scale(5)))
-        keysPanel.add(JBLabel("API Keys (max ${AgentSettings.MAX_GEMINI_KEYS}):"), BorderLayout.NORTH)
-        keysPanel.add(tableScrollPane, BorderLayout.CENTER)
-        keysPanel.add(addKeyPanel, BorderLayout.SOUTH)
-
-        // Info label
-        val infoLabel = JBLabel("<html><small>Rate limit hit 시 자동으로 다음 키로 전환됩니다.</small></html>")
-
-        panel.add(modelPanel, BorderLayout.NORTH)
-        panel.add(keysPanel, BorderLayout.CENTER)
-
-        val bottomPanel = JPanel(BorderLayout())
-        bottomPanel.add(buttonPanel, BorderLayout.NORTH)
-        bottomPanel.add(infoLabel, BorderLayout.SOUTH)
-        panel.add(bottomPanel, BorderLayout.SOUTH)
-
-        return panel
-    }
-
-    private fun createOpenAIPanel(): JPanel {
-        val panel = JPanel()
-        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
-        panel.border = BorderFactory.createTitledBorder("OpenAI Settings")
-
-        // API Key
-        val keyPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        keyPanel.add(JBLabel("API Key:"))
-        openaiApiKeyField = JBPasswordField()
-        openaiApiKeyField!!.preferredSize = Dimension(300, openaiApiKeyField!!.preferredSize.height)
-        openaiApiKeyField!!.emptyText.text = "sk-..."
-        keyPanel.add(openaiApiKeyField!!)
-
-        // Model selection
-        val modelPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        modelPanel.add(JBLabel("Model:"))
         openaiModelCombo = JComboBox(arrayOf("gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-3.5-turbo"))
-        modelPanel.add(openaiModelCombo!!)
+        gbc.gridx = 1; gbc.weightx = 1.0
+        directProvidersPanel!!.add(openaiModelCombo!!, gbc)
 
-        // Test button
-        val buttonPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        testOpenaiButton = JButton("Test API Key").apply {
-            addActionListener { testOpenAIKey() }
-        }
-        buttonPanel.add(testOpenaiButton!!)
+        outerPanel.add(directProvidersPanel!!, BorderLayout.CENTER)
 
-        panel.add(keyPanel)
-        panel.add(modelPanel)
-        panel.add(buttonPanel)
-        panel.add(Box.createVerticalGlue())
-
-        return panel
+        return outerPanel
     }
 
-    private fun createVLLMPanel(): JPanel {
+    private fun createHitlPanel(): JPanel {
         val panel = JPanel()
         panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
-        panel.border = BorderFactory.createTitledBorder("vLLM Settings")
+        panel.border = BorderFactory.createTitledBorder("Human-in-the-Loop (HITL) Configuration")
 
-        // Endpoint
-        val endpointPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        endpointPanel.add(JBLabel("Server Endpoint:"))
-        vllmEndpointField = JBTextField()
-        vllmEndpointField!!.preferredSize = Dimension(300, vllmEndpointField!!.preferredSize.height)
-        vllmEndpointField!!.emptyText.text = "http://localhost:8000"
-        endpointPanel.add(vllmEndpointField!!)
-
-        // Model
-        val modelPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        modelPanel.add(JBLabel("Model Name:"))
-        vllmModelField = JBTextField()
-        vllmModelField!!.preferredSize = Dimension(300, vllmModelField!!.preferredSize.height)
-        vllmModelField!!.emptyText.text = "meta-llama/Llama-2-7b-chat-hf"
-        modelPanel.add(vllmModelField!!)
-
-        // API Key (optional)
-        val keyPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        keyPanel.add(JBLabel("API Key (optional):"))
-        vllmApiKeyField = JBPasswordField()
-        vllmApiKeyField!!.preferredSize = Dimension(300, vllmApiKeyField!!.preferredSize.height)
-        keyPanel.add(vllmApiKeyField!!)
-
-        // Test button
-        val buttonPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        testVllmButton = JButton("Test Connection").apply {
-            addActionListener { testVLLMConnection() }
+        // Auto-approve checkboxes
+        autoApproveReadCheckbox = JCheckBox("Auto-approve file read operations").apply {
+            toolTipText = "Skip confirmation for reading files"
         }
-        buttonPanel.add(testVllmButton!!)
+        autoApproveWriteCheckbox = JCheckBox("Auto-approve file write operations").apply {
+            toolTipText = "Skip confirmation for writing/editing files (CAUTION)"
+        }
+        autoApproveShellCheckbox = JCheckBox("Auto-approve shell commands").apply {
+            toolTipText = "Skip confirmation for executing shell commands (CAUTION)"
+        }
+        showDiffPreviewCheckbox = JCheckBox("Show diff preview before file writes").apply {
+            toolTipText = "Display inline diff highlighting before applying changes"
+        }
 
-        panel.add(endpointPanel)
-        panel.add(modelPanel)
-        panel.add(keyPanel)
-        panel.add(buttonPanel)
-        panel.add(Box.createVerticalGlue())
+        // Timeout
+        val timeoutPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        timeoutPanel.add(JBLabel("Auto-accept timeout (seconds, 0=disabled): "))
+        diffPreviewTimeoutField = JBTextField(5).apply {
+            text = "0"
+            toolTipText = "Automatically accept changes after N seconds"
+        }
+        timeoutPanel.add(diffPreviewTimeoutField)
+        timeoutPanel.alignmentX = Component.LEFT_ALIGNMENT
+
+        panel.add(autoApproveReadCheckbox)
+        panel.add(autoApproveWriteCheckbox)
+        panel.add(autoApproveShellCheckbox)
+        panel.add(showDiffPreviewCheckbox)
+        panel.add(Box.createVerticalStrut(JBUI.scale(5)))
+        panel.add(timeoutPanel)
 
         return panel
     }
 
     private fun createAdvancedPanel(): JPanel {
-        val panel = JPanel()
-        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+        val panel = JPanel(GridBagLayout())
         panel.border = BorderFactory.createTitledBorder("Advanced Settings")
+        val gbc = GridBagConstraints().apply {
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(3)
+        }
+
+        // Default Mode
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+        panel.add(JBLabel("Default Mode:"), gbc)
+
+        defaultModeCombo = JComboBox(arrayOf("chat", "agent"))
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(defaultModeCombo!!, gbc)
 
         // Workspace Root
-        val workspacePanel = JPanel(BorderLayout(JBUI.scale(5), 0)).apply {
-            alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, 30)
-        }
-        workspacePanel.add(JBLabel("Workspace Root (empty = project root):"), BorderLayout.WEST)
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0.0
+        panel.add(JBLabel("Workspace Root:"), gbc)
+
         workspaceRootField = JBTextField().apply {
-            emptyText.text = "/path/to/workspace"
+            emptyText.text = "(empty = use project root)"
         }
-        workspacePanel.add(workspaceRootField!!, BorderLayout.CENTER)
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(workspaceRootField!!, gbc)
 
         // Idle Timeout
-        val timeoutPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-            alignmentX = Component.LEFT_ALIGNMENT
-        }
-        timeoutPanel.add(JBLabel("Idle Timeout (minutes, 0=disabled):"))
+        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0.0
+        panel.add(JBLabel("Idle Timeout (min):"), gbc)
+
         idleTimeoutField = JBTextField(5).apply {
             text = "60"
+            toolTipText = "Stop agent after N minutes of inactivity (0=disabled)"
         }
-        timeoutPanel.add(idleTimeoutField!!)
+        gbc.gridx = 1; gbc.weightx = 1.0
+        panel.add(idleTimeoutField!!, gbc)
 
         // System Prompt
-        val promptPanel = JPanel(BorderLayout()).apply {
-            alignmentX = Component.LEFT_ALIGNMENT
-            border = JBUI.Borders.emptyTop(5)
-        }
-        promptPanel.add(JBLabel("System Prompt (LangChain Agent):"), BorderLayout.NORTH)
+        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0.0; gbc.anchor = GridBagConstraints.NORTHWEST
+        panel.add(JBLabel("System Prompt:"), gbc)
+
         systemPromptArea = JBTextArea(4, 40).apply {
             lineWrap = true
             wrapStyleWord = true
         }
         val scrollPane = JBScrollPane(systemPromptArea).apply {
-            preferredSize = Dimension(400, 100)
+            preferredSize = Dimension(400, 80)
         }
-        promptPanel.add(scrollPane, BorderLayout.CENTER)
-
-        panel.add(workspacePanel)
-        panel.add(Box.createVerticalStrut(JBUI.scale(5)))
-        panel.add(timeoutPanel)
-        panel.add(Box.createVerticalStrut(JBUI.scale(5)))
-        panel.add(promptPanel)
+        gbc.gridx = 1; gbc.weightx = 1.0; gbc.weighty = 1.0; gbc.fill = GridBagConstraints.BOTH
+        panel.add(scrollPane, gbc)
 
         return panel
     }
 
-    // ========== Button Actions ==========
+    private fun createLegacyModePanel(): JPanel {
+        val panel = JPanel()
+        panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
+
+        // Warning message
+        val warningPanel = JPanel(FlowLayout(FlowLayout.LEFT))
+        warningPanel.add(JBLabel("<html><b style='color:orange'>⚠ Legacy mode is deprecated.</b> " +
+                "Consider migrating to ACP mode for better performance and features.</html>"))
+        panel.add(warningPanel)
+        panel.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+        // Backend URL
+        val backendPanel = JPanel(GridBagLayout())
+        backendPanel.border = BorderFactory.createTitledBorder("Backend Server")
+        val gbc = GridBagConstraints().apply {
+            fill = GridBagConstraints.HORIZONTAL
+            insets = JBUI.insets(3)
+        }
+
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0
+        backendPanel.add(JBLabel("Backend URL:"), gbc)
+
+        backendUrlField = JBTextField().apply {
+            emptyText.text = "http://localhost:8000"
+        }
+        gbc.gridx = 1; gbc.weightx = 1.0
+        backendPanel.add(backendUrlField!!, gbc)
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 2
+        val buttonPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        testBackendButton = JButton("Test Connection").apply {
+            addActionListener { testBackendConnection() }
+        }
+        buttonPanel.add(testBackendButton)
+        backendPanel.add(buttonPanel, gbc)
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2
+        legacyAutoApproveCheckbox = JCheckBox("Auto-approve tool execution (HITL bypass)")
+        backendPanel.add(legacyAutoApproveCheckbox!!, gbc)
+
+        panel.add(backendPanel)
+        panel.add(Box.createVerticalStrut(JBUI.scale(10)))
+
+        // Link to migration guide
+        val migrationPanel = JPanel(FlowLayout(FlowLayout.LEFT))
+        migrationPanel.add(JBLabel("<html><a href='#'>View migration guide</a></html>"))
+        panel.add(migrationPanel)
+
+        return panel
+    }
+
+    // ========== Test Actions ==========
+
+    private fun testAcpAgent() {
+        val agentPath = acpAgentPathField?.text ?: ""
+        if (agentPath.isBlank()) {
+            Messages.showWarningDialog("Please enter an agent path", "PyCharm Agent")
+            return
+        }
+
+        try {
+            val file = java.io.File(agentPath)
+            if (!file.exists()) {
+                Messages.showErrorDialog("Agent not found: $agentPath", "PyCharm Agent")
+                return
+            }
+            if (!file.canExecute()) {
+                Messages.showErrorDialog("Agent is not executable: $agentPath", "PyCharm Agent")
+                return
+            }
+
+            // Try to get version
+            val process = ProcessBuilder(agentPath, "--version")
+                .redirectErrorStream(true)
+                .start()
+
+            val output = process.inputStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+
+            if (exitCode == 0) {
+                Messages.showInfoMessage("Agent found!\n\n$output", "PyCharm Agent")
+            } else {
+                Messages.showWarningDialog("Agent exists but --version failed.\nThis may still work if it's an ACP agent.", "PyCharm Agent")
+            }
+        } catch (e: Exception) {
+            Messages.showErrorDialog("Error testing agent: ${e.message}", "PyCharm Agent")
+        }
+    }
+
+    private fun testOpenRouterKey() {
+        val apiKey = String(openrouterApiKeyField?.password ?: charArrayOf())
+        if (apiKey.isBlank()) {
+            Messages.showWarningDialog("Please enter an API key", "PyCharm Agent")
+            return
+        }
+
+        try {
+            val request = Request.Builder()
+                .url("https://openrouter.ai/api/v1/models")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .get()
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful) {
+                Messages.showInfoMessage("OpenRouter API key is valid!", "PyCharm Agent")
+            } else {
+                val body = response.body?.string() ?: ""
+                Messages.showErrorDialog("API key validation failed: ${response.code}\n$body", "PyCharm Agent")
+            }
+        } catch (e: Exception) {
+            Messages.showErrorDialog("Test failed: ${e.message}", "PyCharm Agent")
+        }
+    }
 
     private fun testBackendConnection() {
         val url = backendUrlField?.text ?: return
@@ -388,293 +647,179 @@ class AgentSettingsConfigurable : Configurable {
         }
     }
 
-    private fun addGeminiKey() {
-        val newKey = String(newGeminiKeyField?.password ?: charArrayOf()).trim()
-        if (newKey.isEmpty()) {
-            Messages.showWarningDialog("Please enter an API key", "PyCharm Agent")
-            return
-        }
-
-        if (!newKey.startsWith("AIza")) {
-            Messages.showWarningDialog("Invalid Gemini API key format (should start with 'AIza')", "PyCharm Agent")
-            return
-        }
-
-        val rowCount = geminiKeysTableModel?.rowCount ?: 0
-        if (rowCount >= AgentSettings.MAX_GEMINI_KEYS) {
-            Messages.showWarningDialog("Maximum ${AgentSettings.MAX_GEMINI_KEYS} keys allowed", "PyCharm Agent")
-            return
-        }
-
-        // Check for duplicate
-        for (i in 0 until rowCount) {
-            val existingMasked = geminiKeysTableModel?.getValueAt(i, 1) as? String ?: ""
-            if (existingMasked.endsWith(newKey.takeLast(4))) {
-                Messages.showWarningDialog("This key appears to already exist", "PyCharm Agent")
-                return
-            }
-        }
-
-        // Add to table
-        val maskedKey = "****${newKey.takeLast(4)}"
-        geminiKeysTableModel?.addRow(arrayOf(rowCount + 1, maskedKey, "Pending"))
-        newGeminiKeyField?.text = ""
-
-        // Store actual key in settings temporarily
-        val settings = AgentSettings.getInstance()
-        settings.geminiApiKeys.add(newKey)
-    }
-
-    private fun removeGeminiKey() {
-        val selectedRow = geminiKeysTable?.selectedRow ?: -1
-        if (selectedRow < 0) {
-            Messages.showWarningDialog("Please select a key to remove", "PyCharm Agent")
-            return
-        }
-
-        geminiKeysTableModel?.removeRow(selectedRow)
-
-        // Update settings
-        val settings = AgentSettings.getInstance()
-        if (selectedRow < settings.geminiApiKeys.size) {
-            settings.geminiApiKeys.removeAt(selectedRow)
-        }
-
-        // Update row numbers
-        for (i in 0 until (geminiKeysTableModel?.rowCount ?: 0)) {
-            geminiKeysTableModel?.setValueAt(i + 1, i, 0)
-        }
-    }
-
-    private fun testGeminiKeys() {
-        val settings = AgentSettings.getInstance()
-        if (settings.geminiApiKeys.isEmpty()) {
-            Messages.showWarningDialog("No API keys to test", "PyCharm Agent")
-            return
-        }
-
-        val results = StringBuilder()
-        var successCount = 0
-
-        for ((index, key) in settings.geminiApiKeys.withIndex()) {
-            try {
-                val testUrl = "https://generativelanguage.googleapis.com/v1beta/models?key=$key"
-                val request = Request.Builder().url(testUrl).get().build()
-                val response = client.newCall(request).execute()
-
-                val maskedKey = "****${key.takeLast(4)}"
-                if (response.isSuccessful) {
-                    results.append("$maskedKey: OK\n")
-                    geminiKeysTableModel?.setValueAt("Active", index, 2)
-                    successCount++
-                } else {
-                    results.append("$maskedKey: Failed (${response.code})\n")
-                    geminiKeysTableModel?.setValueAt("Failed", index, 2)
-                }
-            } catch (e: Exception) {
-                val maskedKey = "****${key.takeLast(4)}"
-                results.append("$maskedKey: Error - ${e.message}\n")
-                geminiKeysTableModel?.setValueAt("Error", index, 2)
-            }
-        }
-
-        Messages.showInfoMessage(
-            "Test Results: $successCount/${settings.geminiApiKeys.size} keys valid\n\n$results",
-            "PyCharm Agent"
-        )
-    }
-
-    private fun testOpenAIKey() {
-        val apiKey = String(openaiApiKeyField?.password ?: charArrayOf())
-        if (apiKey.isEmpty()) {
-            Messages.showWarningDialog("Please enter an API key", "PyCharm Agent")
-            return
-        }
-
-        try {
-            val request = Request.Builder()
-                .url("https://api.openai.com/v1/models")
-                .addHeader("Authorization", "Bearer $apiKey")
-                .get()
-                .build()
-
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                Messages.showInfoMessage("OpenAI API key is valid!", "PyCharm Agent")
-            } else {
-                Messages.showErrorDialog("OpenAI API key validation failed: ${response.code}", "PyCharm Agent")
-            }
-        } catch (e: Exception) {
-            Messages.showErrorDialog("OpenAI API test failed: ${e.message}", "PyCharm Agent")
-        }
-    }
-
-    private fun testVLLMConnection() {
-        val endpoint = vllmEndpointField?.text ?: return
-        try {
-            val request = Request.Builder()
-                .url("$endpoint/v1/models")
-                .apply {
-                    val apiKey = String(vllmApiKeyField?.password ?: charArrayOf())
-                    if (apiKey.isNotEmpty()) {
-                        addHeader("Authorization", "Bearer $apiKey")
-                    }
-                }
-                .get()
-                .build()
-
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                Messages.showInfoMessage("vLLM connection successful!", "PyCharm Agent")
-            } else {
-                Messages.showErrorDialog("vLLM connection failed: ${response.code}", "PyCharm Agent")
-            }
-        } catch (e: Exception) {
-            Messages.showErrorDialog("vLLM connection failed: ${e.message}", "PyCharm Agent")
-        }
-    }
-
-    private fun syncToBackend() {
-        val url = backendUrlField?.text ?: return
-        val settings = AgentSettings.getInstance()
-
-        try {
-            val config = mapOf(
-                "provider" to (providerCombo?.selectedItem as? String ?: "gemini"),
-                "gemini" to mapOf(
-                    "keys" to settings.geminiApiKeys.map { key ->
-                        mapOf(
-                            "key" to key,
-                            "id" to "key_${key.takeLast(8)}",
-                            "enabled" to true
-                        )
-                    },
-                    "model" to (geminiModelCombo?.selectedItem as? String ?: "gemini-2.5-flash")
-                ),
-                "openai" to mapOf(
-                    "apiKey" to String(openaiApiKeyField?.password ?: charArrayOf()),
-                    "model" to (openaiModelCombo?.selectedItem as? String ?: "gpt-4")
-                ),
-                "vllm" to mapOf(
-                    "endpoint" to (vllmEndpointField?.text ?: "http://localhost:8000"),
-                    "model" to (vllmModelField?.text ?: ""),
-                    "apiKey" to String(vllmApiKeyField?.password ?: charArrayOf())
-                )
-            )
-
-            val requestBody = gson.toJson(config)
-                .toRequestBody("application/json".toMediaType())
-
-            val request = Request.Builder()
-                .url("$url/config")
-                .post(requestBody)
-                .build()
-
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                println("Sync to backend failed: ${response.code}")
-            }
-        } catch (e: Exception) {
-            println("Sync to backend failed: ${e.message}")
-        }
-    }
-
     // ========== Configurable Implementation ==========
 
     override fun isModified(): Boolean {
         val settings = AgentSettings.getInstance()
-        return backendUrlField?.text != settings.backendUrl ||
-                providerCombo?.selectedItem != settings.provider ||
+        return acpModeRadio?.isSelected != settings.useAcpMode ||
+                acpAgentPathField?.text != settings.acpAgentPath ||
+                acpAgentArgsField?.text != settings.acpAgentArgs.joinToString(" ") ||
+                acpAutoStartCheckbox?.isSelected != settings.acpAutoStart ||
+                acpAutoRestartCheckbox?.isSelected != settings.acpAutoRestart ||
+                (acpHealthCheckIntervalField?.text?.toIntOrNull() ?: 30) != settings.acpHealthCheckInterval ||
+                String(openrouterApiKeyField?.password ?: charArrayOf()) != settings.openrouterApiKey ||
+                openrouterModelCombo?.selectedItem != settings.openrouterModel ||
+                openrouterBaseUrlField?.text != settings.openrouterBaseUrl ||
+                useOpenRouterDirectCheckbox?.isSelected != settings.useOpenRouterDirect ||
+                openrouterSystemPromptField?.text != settings.openrouterSystemPrompt ||
+                enableDirectProvidersCheckbox?.isSelected != settings.enableDirectProviders ||
+                String(geminiApiKeyField?.password ?: charArrayOf()) != settings.geminiApiKey ||
                 geminiModelCombo?.selectedItem != settings.geminiModel ||
                 String(openaiApiKeyField?.password ?: charArrayOf()) != settings.openaiApiKey ||
                 openaiModelCombo?.selectedItem != settings.openaiModel ||
-                vllmEndpointField?.text != settings.vllmEndpoint ||
-                vllmModelField?.text != settings.vllmModel ||
-                String(vllmApiKeyField?.password ?: charArrayOf()) != settings.vllmApiKey ||
-                autoExecuteCheckbox?.isSelected != settings.autoExecuteMode ||
-                autoApproveCheckbox?.isSelected != settings.autoApprove ||
+                autoApproveReadCheckbox?.isSelected != settings.autoApproveRead ||
+                autoApproveWriteCheckbox?.isSelected != settings.autoApproveWrite ||
+                autoApproveShellCheckbox?.isSelected != settings.autoApproveShell ||
+                showDiffPreviewCheckbox?.isSelected != settings.showDiffPreview ||
+                (diffPreviewTimeoutField?.text?.toIntOrNull() ?: 0) != settings.diffPreviewTimeout ||
+                defaultModeCombo?.selectedItem != settings.defaultMode ||
                 workspaceRootField?.text != settings.workspaceRoot ||
                 systemPromptArea?.text != settings.systemPrompt ||
-                (idleTimeoutField?.text?.toIntOrNull() ?: 60) != settings.idleTimeoutMinutes
+                (idleTimeoutField?.text?.toIntOrNull() ?: 60) != settings.idleTimeoutMinutes ||
+                backendUrlField?.text != settings.backendUrl ||
+                legacyAutoApproveCheckbox?.isSelected != settings.autoApprove
     }
 
     override fun apply() {
         val settings = AgentSettings.getInstance()
-        settings.backendUrl = backendUrlField?.text ?: "http://localhost:8000"
-        settings.provider = providerCombo?.selectedItem as? String ?: "gemini"
+
+        // Mode selection
+        settings.useAcpMode = acpModeRadio?.isSelected ?: true
+
+        // ACP settings
+        settings.acpAgentPath = acpAgentPathField?.text ?: ""
+        settings.acpAgentArgs = (acpAgentArgsField?.text ?: "")
+            .split(" ")
+            .filter { it.isNotBlank() }
+            .toMutableList()
+        settings.acpAutoStart = acpAutoStartCheckbox?.isSelected ?: true
+        settings.acpAutoRestart = acpAutoRestartCheckbox?.isSelected ?: true
+        settings.acpHealthCheckInterval = acpHealthCheckIntervalField?.text?.toIntOrNull() ?: 30
+
+        // OpenRouter settings
+        settings.openrouterApiKey = String(openrouterApiKeyField?.password ?: charArrayOf())
+        settings.openrouterModel = openrouterModelCombo?.selectedItem as? String ?: "anthropic/claude-sonnet-4"
+        settings.openrouterBaseUrl = openrouterBaseUrlField?.text ?: "https://openrouter.ai/api/v1"
+        settings.useOpenRouterDirect = useOpenRouterDirectCheckbox?.isSelected ?: false
+        settings.openrouterSystemPrompt = openrouterSystemPromptField?.text ?: ""
+
+        // Direct provider settings
+        settings.enableDirectProviders = enableDirectProvidersCheckbox?.isSelected ?: false
+        settings.geminiApiKey = String(geminiApiKeyField?.password ?: charArrayOf())
         settings.geminiModel = geminiModelCombo?.selectedItem as? String ?: "gemini-2.5-flash"
         settings.openaiApiKey = String(openaiApiKeyField?.password ?: charArrayOf())
         settings.openaiModel = openaiModelCombo?.selectedItem as? String ?: "gpt-4"
-        settings.vllmEndpoint = vllmEndpointField?.text ?: "http://localhost:8000"
-        settings.vllmModel = vllmModelField?.text ?: ""
-        settings.vllmApiKey = String(vllmApiKeyField?.password ?: charArrayOf())
-        settings.autoExecuteMode = autoExecuteCheckbox?.isSelected ?: false
-        settings.autoApprove = autoApproveCheckbox?.isSelected ?: false
+
+        // HITL settings
+        settings.autoApproveRead = autoApproveReadCheckbox?.isSelected ?: true
+        settings.autoApproveWrite = autoApproveWriteCheckbox?.isSelected ?: false
+        settings.autoApproveShell = autoApproveShellCheckbox?.isSelected ?: false
+        settings.showDiffPreview = showDiffPreviewCheckbox?.isSelected ?: true
+        settings.diffPreviewTimeout = diffPreviewTimeoutField?.text?.toIntOrNull() ?: 0
+
+        // Advanced settings
+        settings.defaultMode = defaultModeCombo?.selectedItem as? String ?: "chat"
         settings.workspaceRoot = workspaceRootField?.text ?: ""
         settings.systemPrompt = systemPromptArea?.text ?: ""
         settings.idleTimeoutMinutes = idleTimeoutField?.text?.toIntOrNull() ?: 60
 
-        // Sync to backend
-        syncToBackend()
+        // Legacy settings
+        settings.backendUrl = backendUrlField?.text ?: "http://localhost:8000"
+        settings.autoApprove = legacyAutoApproveCheckbox?.isSelected ?: false
+
+        // Notify components that settings have changed
+        SettingsChangeNotifier.getInstance().notifySettingsChanged()
     }
 
     override fun reset() {
         val settings = AgentSettings.getInstance()
 
-        backendUrlField?.text = settings.backendUrl
-        providerCombo?.selectedItem = settings.provider
-        providerCardLayout?.show(providerCardsPanel, settings.provider)
-        autoExecuteCheckbox?.isSelected = settings.autoExecuteMode
-        autoApproveCheckbox?.isSelected = settings.autoApprove
-
-        // Gemini
-        geminiModelCombo?.selectedItem = settings.geminiModel
-        geminiKeysTableModel?.rowCount = 0
-        for ((index, key) in settings.geminiApiKeys.withIndex()) {
-            val maskedKey = "****${key.takeLast(4)}"
-            geminiKeysTableModel?.addRow(arrayOf(index + 1, maskedKey, "Active"))
+        // Mode selection
+        if (settings.useAcpMode) {
+            acpModeRadio?.isSelected = true
+            modeCardLayout?.show(modeCardsPanel, "acp")
+        } else {
+            legacyModeRadio?.isSelected = true
+            modeCardLayout?.show(modeCardsPanel, "legacy")
         }
 
-        // OpenAI
+        // ACP settings
+        acpAgentPathField?.text = settings.acpAgentPath
+        acpAgentArgsField?.text = settings.acpAgentArgs.joinToString(" ")
+        acpAutoStartCheckbox?.isSelected = settings.acpAutoStart
+        acpAutoRestartCheckbox?.isSelected = settings.acpAutoRestart
+        acpHealthCheckIntervalField?.text = settings.acpHealthCheckInterval.toString()
+
+        // OpenRouter settings
+        openrouterApiKeyField?.text = settings.openrouterApiKey
+        openrouterModelCombo?.selectedItem = settings.openrouterModel
+        openrouterBaseUrlField?.text = settings.openrouterBaseUrl
+        useOpenRouterDirectCheckbox?.isSelected = settings.useOpenRouterDirect
+        openrouterSystemPromptField?.text = settings.openrouterSystemPrompt
+
+        // Direct provider settings
+        enableDirectProvidersCheckbox?.isSelected = settings.enableDirectProviders
+        directProvidersPanel?.isVisible = settings.enableDirectProviders
+        geminiApiKeyField?.text = settings.geminiApiKey
+        geminiModelCombo?.selectedItem = settings.geminiModel
         openaiApiKeyField?.text = settings.openaiApiKey
         openaiModelCombo?.selectedItem = settings.openaiModel
 
-        // vLLM
-        vllmEndpointField?.text = settings.vllmEndpoint
-        vllmModelField?.text = settings.vllmModel
-        vllmApiKeyField?.text = settings.vllmApiKey
+        // HITL settings
+        autoApproveReadCheckbox?.isSelected = settings.autoApproveRead
+        autoApproveWriteCheckbox?.isSelected = settings.autoApproveWrite
+        autoApproveShellCheckbox?.isSelected = settings.autoApproveShell
+        showDiffPreviewCheckbox?.isSelected = settings.showDiffPreview
+        diffPreviewTimeoutField?.text = settings.diffPreviewTimeout.toString()
 
         // Advanced settings
+        defaultModeCombo?.selectedItem = settings.defaultMode
         workspaceRootField?.text = settings.workspaceRoot
         systemPromptArea?.text = settings.systemPrompt
         idleTimeoutField?.text = settings.idleTimeoutMinutes.toString()
+
+        // Legacy settings
+        backendUrlField?.text = settings.backendUrl
+        legacyAutoApproveCheckbox?.isSelected = settings.autoApprove
     }
 
     override fun disposeUIResources() {
         mainPanel = null
-        backendUrlField = null
-        testBackendButton = null
-        providerCombo = null
-        providerCardsPanel = null
-        providerCardLayout = null
+        acpModeRadio = null
+        legacyModeRadio = null
+        modeCardsPanel = null
+        modeCardLayout = null
+        acpAgentPathField = null
+        acpAgentArgsField = null
+        acpAutoStartCheckbox = null
+        acpAutoRestartCheckbox = null
+        acpHealthCheckIntervalField = null
+        testAcpAgentButton = null
+        openrouterApiKeyField = null
+        openrouterModelCombo = null
+        openrouterBaseUrlField = null
+        useOpenRouterDirectCheckbox = null
+        openrouterSystemPromptField = null
+        testOpenrouterButton = null
+        enableDirectProvidersCheckbox = null
+        geminiApiKeyField = null
         geminiModelCombo = null
-        geminiKeysTableModel = null
-        geminiKeysTable = null
-        newGeminiKeyField = null
-        addGeminiKeyButton = null
-        removeGeminiKeyButton = null
-        testGeminiKeysButton = null
         openaiApiKeyField = null
         openaiModelCombo = null
-        testOpenaiButton = null
-        vllmEndpointField = null
-        vllmModelField = null
-        vllmApiKeyField = null
-        testVllmButton = null
-        autoExecuteCheckbox = null
-        autoApproveCheckbox = null
+        directProvidersPanel = null
+        autoApproveReadCheckbox = null
+        autoApproveWriteCheckbox = null
+        autoApproveShellCheckbox = null
+        showDiffPreviewCheckbox = null
+        diffPreviewTimeoutField = null
+        defaultModeCombo = null
         workspaceRootField = null
         systemPromptArea = null
         idleTimeoutField = null
+        backendUrlField = null
+        testBackendButton = null
+        legacyAutoApproveCheckbox = null
+        advancedPanel = null
+        advancedToggleButton = null
     }
 }
