@@ -30,3 +30,6 @@ Thumbs.db
 # Build outputs
 plugin/build/
 backend/__pycache__/
+
+# E2E test config (API keys)
+plugin/tests/e2e/conf/

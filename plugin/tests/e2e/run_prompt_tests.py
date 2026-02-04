@@ -2,15 +2,22 @@
 """
 PyCharm Agent E2E Prompt Test Runner
 
-Runs prompt-based tests against the PyCharm Agent backend API.
-Supports mock mode (cached results) and live mode (real API calls).
+Runs prompt-based tests against the PyCharm Agent backend API or ACP agents.
+Supports mock mode (cached results), live HTTP mode (real API calls),
+and ACP mode (direct JSON-RPC communication with agent CLI).
 
 Usage:
     # Mock mode (default, uses cached results)
     python tests/e2e/run_prompt_tests.py
 
-    # Live mode (calls real backend)
+    # Live mode (calls real backend via HTTP)
     python tests/e2e/run_prompt_tests.py --live
+
+    # ACP mode (direct JSON-RPC with agent CLI)
+    python tests/e2e/run_prompt_tests.py --acp --live
+
+    # ACP mode with custom agent path
+    python tests/e2e/run_prompt_tests.py --acp --live --agent-path ~/.local/bin/claude
 
     # Specific category
     python tests/e2e/run_prompt_tests.py --category chat
@@ -31,12 +38,15 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -284,7 +294,707 @@ class MockExecutor:
         )
 
 
-class LiveExecutor:
+class ToolExecutorMixin:
+    """Shared tool execution logic for executors"""
+
+    def _execute_tool(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        workspace_root: str,
+        add_step: Callable,
+        all_code_generated: list[str],
+    ) -> dict:
+        """Execute a tool locally and return the result"""
+        exec_start = time.time()
+
+        if tool_name in ("execute_command_tool", "shell", "Bash"):
+            command = tool_args.get("command", "")
+            timeout_ms = tool_args.get("timeout", 60000)
+            timeout_sec = timeout_ms / 1000 if timeout_ms else 60
+
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                    cwd=workspace_root,
+                )
+                output = result.stdout + result.stderr
+                success = result.returncode == 0
+                add_step(
+                    "execute",
+                    f"Shell: {command[:50]}{'...' if len(command) > 50 else ''}",
+                    exec_start,
+                    code=command,
+                    output=output[:2000],
+                    tool=tool_name,
+                    returncode=result.returncode,
+                )
+                result_dict = {
+                    "success": success,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "returncode": result.returncode,
+                }
+                if not success:
+                    error_msg = result.stderr.strip() if result.stderr else f"Exit code {result.returncode}"
+                    result_dict["error"] = error_msg[:500]
+                return result_dict
+            except subprocess.TimeoutExpired:
+                add_step(
+                    "execute",
+                    f"Shell timeout: {command[:50]}",
+                    exec_start,
+                    code=command,
+                    output="Timeout",
+                    tool=tool_name,
+                )
+                return {"success": False, "error": "Command timed out"}
+            except Exception as e:
+                add_step(
+                    "execute",
+                    f"Shell error: {command[:50]}",
+                    exec_start,
+                    code=command,
+                    output=str(e),
+                    tool=tool_name,
+                )
+                return {"success": False, "error": str(e)}
+
+        elif tool_name in ("jupyter_cell", "jupyter_cell_tool"):
+            code = tool_args.get("code", "")
+            all_code_generated.append(code)
+
+            # Execute Python code in a subprocess
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".py", delete=False
+                ) as f:
+                    f.write(code)
+                    temp_file = f.name
+
+                result = subprocess.run(
+                    ["python3", temp_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=workspace_root,
+                )
+                output = result.stdout + result.stderr
+                os.unlink(temp_file)
+
+                success = result.returncode == 0
+                add_step(
+                    "execute",
+                    f"Python: {code[:50]}{'...' if len(code) > 50 else ''}",
+                    exec_start,
+                    code=code,
+                    output=output[:2000],
+                    tool=tool_name,
+                )
+                result_dict = {
+                    "success": success,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "output": output,
+                }
+                if not success:
+                    # Include error message from stderr when execution fails
+                    error_msg = result.stderr.strip() if result.stderr else f"Exit code {result.returncode}"
+                    result_dict["error"] = error_msg[:500]  # Limit error message size
+                return result_dict
+            except Exception as e:
+                add_step(
+                    "execute",
+                    "Python error",
+                    exec_start,
+                    code=code,
+                    output=str(e),
+                    tool=tool_name,
+                )
+                return {"success": False, "error": str(e)}
+
+        elif tool_name in ("write_file", "write_file_tool", "Write"):
+            file_path = tool_args.get("path", tool_args.get("file_path", ""))
+            content = tool_args.get("content", "")
+            try:
+                if os.path.isabs(file_path):
+                    full_path = file_path
+                else:
+                    full_path = os.path.join(workspace_root, file_path)
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, "w") as f:
+                    f.write(content)
+                add_step(
+                    "execute",
+                    f"Write: {file_path}",
+                    exec_start,
+                    code=f"# Write to {file_path}\n{content[:200]}{'...' if len(content) > 200 else ''}",
+                    output=f"Written {len(content)} bytes to {file_path}",
+                    tool=tool_name,
+                )
+                return {"success": True, "message": f"File written: {file_path}"}
+            except Exception as e:
+                add_step(
+                    "execute",
+                    f"Write error: {file_path}",
+                    exec_start,
+                    output=str(e),
+                    tool=tool_name,
+                )
+                return {"success": False, "error": str(e)}
+
+        elif tool_name in ("read_file", "read_file_tool", "Read"):
+            file_path = tool_args.get("path", tool_args.get("file_path", ""))
+            try:
+                if os.path.isabs(file_path):
+                    full_path = file_path
+                else:
+                    full_path = os.path.join(workspace_root, file_path)
+                with open(full_path) as f:
+                    content = f.read()
+                add_step(
+                    "execute",
+                    f"Read: {file_path}",
+                    exec_start,
+                    output=f"Read {len(content)} bytes from {file_path}",
+                    tool=tool_name,
+                )
+                return {"success": True, "content": content}
+            except Exception as e:
+                add_step(
+                    "execute",
+                    f"Read error: {file_path}",
+                    exec_start,
+                    output=str(e),
+                    tool=tool_name,
+                )
+                return {"success": False, "error": str(e)}
+
+        elif tool_name in ("markdown", "markdown_tool"):
+            content = tool_args.get("content", "")
+            add_step(
+                "execute",
+                "Markdown output",
+                exec_start,
+                code=content[:200],
+                tool=tool_name,
+            )
+            return {"success": True, "content": content}
+
+        elif tool_name in ("final_answer", "final_answer_tool"):
+            answer = tool_args.get("answer", "")
+            add_step(
+                "execute",
+                "Final answer",
+                exec_start,
+                output=answer[:500],
+                tool=tool_name,
+            )
+            return {"success": True, "answer": answer}
+
+        elif tool_name in ("Glob", "glob"):
+            # Pattern-based file search
+            pattern = tool_args.get("pattern", "")
+            path = tool_args.get("path", workspace_root)
+            try:
+                import glob as glob_module
+                if os.path.isabs(path):
+                    search_path = path
+                else:
+                    search_path = os.path.join(workspace_root, path)
+                full_pattern = os.path.join(search_path, pattern)
+                matches = glob_module.glob(full_pattern, recursive=True)
+                add_step(
+                    "execute",
+                    f"Glob: {pattern}",
+                    exec_start,
+                    output=f"Found {len(matches)} files",
+                    tool=tool_name,
+                )
+                return {"success": True, "files": matches[:100]}  # Limit results
+            except Exception as e:
+                add_step(
+                    "execute",
+                    f"Glob error: {pattern}",
+                    exec_start,
+                    output=str(e),
+                    tool=tool_name,
+                )
+                return {"success": False, "error": str(e)}
+
+        elif tool_name in ("Grep", "grep"):
+            # Content search
+            pattern = tool_args.get("pattern", "")
+            path = tool_args.get("path", workspace_root)
+            try:
+                # Use grep command
+                if os.path.isabs(path):
+                    search_path = path
+                else:
+                    search_path = os.path.join(workspace_root, path)
+                result = subprocess.run(
+                    ["grep", "-r", "-n", pattern, search_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                output = result.stdout[:2000]
+                add_step(
+                    "execute",
+                    f"Grep: {pattern}",
+                    exec_start,
+                    output=output,
+                    tool=tool_name,
+                )
+                return {"success": True, "output": output}
+            except Exception as e:
+                add_step(
+                    "execute",
+                    f"Grep error: {pattern}",
+                    exec_start,
+                    output=str(e),
+                    tool=tool_name,
+                )
+                return {"success": False, "error": str(e)}
+
+        else:
+            # Unknown tool - just log it
+            add_step(
+                "execute",
+                f"Unknown tool: {tool_name}",
+                exec_start,
+                details=tool_args,
+                tool=tool_name,
+            )
+            return {"success": True, "message": f"Tool {tool_name} acknowledged"}
+
+
+class ACPExecutor(ToolExecutorMixin):
+    """ACP mode executor (calls OpenRouter API directly)"""
+
+    # Tool definitions for OpenRouter/OpenAI format
+    TOOL_DEFINITIONS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_command",
+                "description": "Execute a shell command",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "The shell command to execute"},
+                    },
+                    "required": ["command"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "python_execute",
+                "description": "Execute Python code",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "Python code to execute"},
+                    },
+                    "required": ["code"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read contents of a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path to read"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write content to a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path to write"},
+                        "content": {"type": "string", "description": "Content to write"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+        },
+    ]
+
+    def __init__(
+        self,
+        agent_path: str = "",  # Unused, kept for compatibility
+        api_key: str = "",
+        model: str = "",
+        force_live: bool = False,
+    ):
+        self.cassettes_dir = CASSETTES_DIR
+        self.cassettes_dir.mkdir(parents=True, exist_ok=True)
+        self.force_live = force_live
+
+        # Load config from conf/openrouter.json first, then fallback to other sources
+        config = self._load_config()
+        self.endpoint = config.get("endpoint", "https://openrouter.ai/api/v1")
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "") or config.get("apiKey", "")
+        self.model = model or os.environ.get("OPENROUTER_MODEL", "") or config.get("model", "openai/gpt-4o-mini")
+
+    def _load_config(self) -> dict:
+        """Load config from conf/openrouter.json or fallback to ~/.pycharm_agent/config.json"""
+        # First try local conf directory
+        local_config_path = TESTS_DIR / "conf" / "openrouter.json"
+        if local_config_path.exists():
+            try:
+                with open(local_config_path) as f:
+                    logger.info(f"Loading config from {local_config_path}")
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load local config: {e}")
+
+        # Fallback to home directory config
+        home_config_path = Path.home() / ".pycharm_agent" / "config.json"
+        if home_config_path.exists():
+            try:
+                with open(home_config_path) as f:
+                    config = json.load(f)
+                    # Extract vllm config for OpenRouter
+                    vllm_config = config.get("vllm", {})
+                    return {
+                        "endpoint": vllm_config.get("endpoint", "https://openrouter.ai/api/v1"),
+                        "apiKey": vllm_config.get("apiKey", ""),
+                        "model": vllm_config.get("model", "openai/gpt-4o-mini"),
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to load home config: {e}")
+
+        return {}
+
+    def _load_cached_result(self, prompt: Prompt) -> ExecutionResult | None:
+        """Load cached result if prompt hash matches"""
+        cassette_file = self.cassettes_dir / f"{prompt.id}.yaml"
+        if not cassette_file.exists():
+            return None
+
+        with open(cassette_file) as f:
+            cached = yaml.safe_load(f)
+
+        current_hash = compute_prompt_hash(prompt.text, prompt.context)
+        cached_hash = cached.get("prompt_hash", "")
+
+        if cached_hash != current_hash:
+            logger.info(f"  Cache miss for {prompt.id}: prompt changed")
+            return None
+
+        logger.info(f"  Cache hit for {prompt.id}: using recorded result")
+
+        steps = []
+        for step_data in cached.get("steps", []):
+            steps.append(
+                ExecutionStep(
+                    phase=step_data.get("phase", "unknown"),
+                    description=step_data.get("description", ""),
+                    start_time_ms=step_data.get("start_time_ms", 0),
+                    duration_ms=step_data.get("duration_ms", 0),
+                    details=step_data.get("details", {}),
+                    code=step_data.get("code", ""),
+                    output=step_data.get("output", ""),
+                )
+            )
+
+        steps.insert(
+            0,
+            ExecutionStep(
+                phase="cache",
+                description="Loaded from cached cassette",
+                start_time_ms=0,
+                duration_ms=0,
+                details={"cached_hash": cached_hash},
+            ),
+        )
+
+        return ExecutionResult(
+            success=cached.get("success", True),
+            duration_ms=cached.get("duration_ms", 0),
+            error=cached.get("error"),
+            output=cached.get("output", ""),
+            code_generated=cached.get("code_generated", ""),
+            steps=steps,
+            tokens_input=cached.get("tokens_input", 0),
+            tokens_output=cached.get("tokens_output", 0),
+        )
+
+    def _save_cassette(self, prompt: Prompt, result: ExecutionResult) -> None:
+        """Save result to cassette cache"""
+        cassette_file = self.cassettes_dir / f"{prompt.id}.yaml"
+
+        prompt_hash = compute_prompt_hash(prompt.text, prompt.context)
+
+        result_dict = {
+            "prompt_hash": prompt_hash,
+            "prompt_text": prompt.text,
+            "success": result.success,
+            "duration_ms": result.duration_ms,
+            "error": result.error,
+            "output": result.output,
+            "code_generated": result.code_generated,
+            "steps": [asdict(s) for s in result.steps],
+            "tokens_input": result.tokens_input,
+            "tokens_output": result.tokens_output,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "executor": "acp",
+        }
+
+        with open(cassette_file, "w") as f:
+            yaml.dump(result_dict, f, default_flow_style=False, allow_unicode=True)
+
+    async def execute(self, prompt: Prompt) -> ExecutionResult:
+        """Execute prompt via ACP agent"""
+        # Check cache first (unless force_live)
+        if not self.force_live:
+            cached_result = self._load_cached_result(prompt)
+            if cached_result:
+                return cached_result
+
+        return await self._execute_acp(prompt)
+
+    async def _execute_acp(self, prompt: Prompt) -> ExecutionResult:
+        """Execute via OpenRouter API directly with tool calling support"""
+        import aiohttp
+
+        start_time = time.time()
+        steps: list[ExecutionStep] = []
+        full_response = ""
+        all_code_generated: list[str] = []
+        execution_errors: list[str] = []
+        tokens_input = 0
+        tokens_output = 0
+
+        def add_step(
+            phase: str,
+            description: str,
+            step_start: float,
+            code: str = "",
+            output: str = "",
+            **details: Any,
+        ):
+            duration = int((time.time() - step_start) * 1000)
+            elapsed = int((step_start - start_time) * 1000)
+            steps.append(
+                ExecutionStep(
+                    phase=phase,
+                    description=description,
+                    start_time_ms=elapsed,
+                    duration_ms=duration,
+                    details=details,
+                    code=code,
+                    output=output,
+                )
+            )
+
+        workspace_root = prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT)
+
+        try:
+            # Verify API key exists
+            if not self.api_key:
+                return ExecutionResult(
+                    success=False,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    error="OpenRouter API key not configured. Set in conf/openrouter.json or OPENROUTER_API_KEY env var.",
+                    steps=steps,
+                )
+
+            step_start = time.time()
+            add_step("prepare", "Preparing OpenRouter API request", step_start, model=self.model, endpoint=self.endpoint)
+
+            # Build messages for chat completion
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are a helpful coding assistant. You have access to tools for executing code and file operations. The working directory is: {workspace_root}",
+                },
+                {
+                    "role": "user",
+                    "content": prompt.text,
+                },
+            ]
+
+            # API request payload
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "tools": self.TOOL_DEFINITIONS,
+                "tool_choice": "auto",
+                "max_tokens": 4096,
+            }
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/pycharm-agent",
+                "X-Title": "PyCharm Agent E2E Tests",
+            }
+
+            api_url = f"{self.endpoint}/chat/completions"
+            logger.info(f"Calling OpenRouter API: {self.model}")
+            logger.debug(f"Endpoint: {api_url}")
+
+            async with aiohttp.ClientSession() as session:
+                max_iterations = 10  # Prevent infinite tool loops
+                iteration = 0
+
+                while iteration < max_iterations:
+                    iteration += 1
+                    step_start = time.time()
+
+                    async with session.post(
+                        api_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=120),
+                    ) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            add_step("error", f"API error: {response.status}", step_start, output=error_text[:500])
+                            execution_errors.append(f"API error {response.status}: {error_text[:200]}")
+                            break
+
+                        result = await response.json()
+                        add_step("response", f"Received response (iteration {iteration})", step_start)
+
+                        # Track token usage
+                        usage = result.get("usage", {})
+                        tokens_input += usage.get("prompt_tokens", 0)
+                        tokens_output += usage.get("completion_tokens", 0)
+
+                        # Get the assistant's response
+                        choice = result.get("choices", [{}])[0]
+                        message = choice.get("message", {})
+                        finish_reason = choice.get("finish_reason", "")
+
+                        # Check for text content
+                        content = message.get("content", "")
+                        if content:
+                            full_response += content
+
+                        # Check for tool calls
+                        tool_calls = message.get("tool_calls", [])
+                        if not tool_calls or finish_reason != "tool_calls":
+                            # No more tool calls, we're done
+                            logger.info(f"Agent finished (reason: {finish_reason})")
+                            break
+
+                        # Process tool calls
+                        tool_results = []
+                        for tool_call in tool_calls:
+                            tool_id = tool_call.get("id", "")
+                            function = tool_call.get("function", {})
+                            tool_name = function.get("name", "")
+                            tool_args_str = function.get("arguments", "{}")
+
+                            try:
+                                tool_args = json.loads(tool_args_str)
+                            except json.JSONDecodeError:
+                                tool_args = {}
+
+                            logger.info(f"Executing tool: {tool_name}")
+
+                            # Map tool names to internal tool names
+                            internal_tool_name = tool_name
+                            if tool_name == "execute_command":
+                                internal_tool_name = "shell"
+                            elif tool_name == "python_execute":
+                                internal_tool_name = "jupyter_cell"
+                                tool_args = {"code": tool_args.get("code", "")}
+
+                            # Execute tool using shared mixin
+                            exec_result = self._execute_tool(
+                                internal_tool_name,
+                                tool_args,
+                                workspace_root,
+                                add_step,
+                                all_code_generated,
+                            )
+
+                            # Track execution errors
+                            if not exec_result.get("success", True):
+                                error_msg = exec_result.get("error") or "Unknown error"
+                                execution_errors.append(f"{tool_name}: {error_msg}")
+
+                            # Format tool result for API
+                            tool_output = json.dumps(exec_result, ensure_ascii=False)
+                            tool_results.append({
+                                "role": "tool",
+                                "tool_call_id": tool_id,
+                                "content": tool_output[:4000],  # Limit tool output size
+                            })
+
+                        # Add assistant message with tool calls to conversation
+                        messages.append(message)
+                        # Add tool results
+                        messages.extend(tool_results)
+                        # Update payload for next iteration
+                        payload["messages"] = messages
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Check for execution errors
+            has_errors = len(execution_errors) > 0
+            error_summary = "; ".join(execution_errors) if execution_errors else None
+
+            execution_result = ExecutionResult(
+                success=not has_errors,
+                duration_ms=duration_ms,
+                error=error_summary,
+                output=full_response,
+                code_generated="\n\n".join(all_code_generated),
+                steps=steps,
+                tokens_input=tokens_input,
+                tokens_output=tokens_output,
+            )
+            self._save_cassette(prompt, execution_result)
+            return execution_result
+
+        except asyncio.TimeoutError:
+            return ExecutionResult(
+                success=False,
+                duration_ms=int((time.time() - start_time) * 1000),
+                error="OpenRouter API request timed out after 120s",
+                steps=steps,
+            )
+        except aiohttp.ClientConnectorError as e:
+            return ExecutionResult(
+                success=False,
+                duration_ms=int((time.time() - start_time) * 1000),
+                error=f"Connection error: {e}",
+                steps=steps,
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in _execute_acp")
+            return ExecutionResult(
+                success=False,
+                duration_ms=int((time.time() - start_time) * 1000),
+                error=str(e),
+                output=full_response,
+                steps=steps,
+            )
+
+
+class LiveExecutor(ToolExecutorMixin):
     """Live mode executor (calls real backend API)"""
 
     def __init__(
@@ -408,14 +1118,13 @@ class LiveExecutor:
     async def _execute_live(self, prompt: Prompt) -> ExecutionResult:
         """Execute live API call with full agent loop (tool execution + resume)"""
         import aiohttp
-        import subprocess
-        import tempfile
 
         start_time = time.time()
         steps: list[ExecutionStep] = []
         full_response = ""
         all_code_generated: list[str] = []
         execution_errors: list[str] = []  # Track execution failures
+        workspace_root = prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT)
 
         def add_step(
             phase: str,
@@ -440,193 +1149,10 @@ class LiveExecutor:
             )
 
         def execute_tool(tool_name: str, tool_args: dict) -> dict:
-            """Execute a tool locally and return the result"""
-            exec_start = time.time()
-
-            if tool_name in ("execute_command_tool", "shell"):
-                command = tool_args.get("command", "")
-                timeout_ms = tool_args.get("timeout", 60000)
-                timeout_sec = timeout_ms / 1000 if timeout_ms else 60
-
-                try:
-                    result = subprocess.run(
-                        command,
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout_sec,
-                        cwd=prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT),
-                    )
-                    output = result.stdout + result.stderr
-                    success = result.returncode == 0
-                    add_step(
-                        "execute",
-                        f"Shell: {command[:50]}{'...' if len(command) > 50 else ''}",
-                        exec_start,
-                        code=command,
-                        output=output[:2000],
-                        tool=tool_name,
-                        returncode=result.returncode,
-                    )
-                    return {
-                        "success": success,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "returncode": result.returncode,
-                    }
-                except subprocess.TimeoutExpired:
-                    add_step(
-                        "execute",
-                        f"Shell timeout: {command[:50]}",
-                        exec_start,
-                        code=command,
-                        output="Timeout",
-                        tool=tool_name,
-                    )
-                    return {"success": False, "error": "Command timed out"}
-                except Exception as e:
-                    add_step(
-                        "execute",
-                        f"Shell error: {command[:50]}",
-                        exec_start,
-                        code=command,
-                        output=str(e),
-                        tool=tool_name,
-                    )
-                    return {"success": False, "error": str(e)}
-
-            elif tool_name in ("jupyter_cell", "jupyter_cell_tool"):
-                code = tool_args.get("code", "")
-                all_code_generated.append(code)
-
-                # Execute Python code in a subprocess
-                try:
-                    with tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".py", delete=False
-                    ) as f:
-                        f.write(code)
-                        temp_file = f.name
-
-                    result = subprocess.run(
-                        ["python3", temp_file],
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                        cwd=prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT),
-                    )
-                    output = result.stdout + result.stderr
-                    os.unlink(temp_file)
-
-                    add_step(
-                        "execute",
-                        f"Python: {code[:50]}{'...' if len(code) > 50 else ''}",
-                        exec_start,
-                        code=code,
-                        output=output[:2000],
-                        tool=tool_name,
-                    )
-                    return {
-                        "success": result.returncode == 0,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "output": output,
-                    }
-                except Exception as e:
-                    add_step(
-                        "execute",
-                        f"Python error",
-                        exec_start,
-                        code=code,
-                        output=str(e),
-                        tool=tool_name,
-                    )
-                    return {"success": False, "error": str(e)}
-
-            elif tool_name in ("write_file", "write_file_tool"):
-                file_path = tool_args.get("path", "")
-                content = tool_args.get("content", "")
-                try:
-                    workspace = prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT)
-                    full_path = os.path.join(workspace, file_path)
-                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                    with open(full_path, "w") as f:
-                        f.write(content)
-                    add_step(
-                        "execute",
-                        f"Write: {file_path}",
-                        exec_start,
-                        code=f"# Write to {file_path}\n{content[:200]}{'...' if len(content) > 200 else ''}",
-                        output=f"Written {len(content)} bytes to {file_path}",
-                        tool=tool_name,
-                    )
-                    return {"success": True, "message": f"File written: {file_path}"}
-                except Exception as e:
-                    add_step(
-                        "execute",
-                        f"Write error: {file_path}",
-                        exec_start,
-                        output=str(e),
-                        tool=tool_name,
-                    )
-                    return {"success": False, "error": str(e)}
-
-            elif tool_name in ("read_file", "read_file_tool"):
-                file_path = tool_args.get("path", "")
-                try:
-                    workspace = prompt.context.get("workspaceRoot") or str(DEFAULT_WORKSPACE_ROOT)
-                    full_path = os.path.join(workspace, file_path)
-                    with open(full_path) as f:
-                        content = f.read()
-                    add_step(
-                        "execute",
-                        f"Read: {file_path}",
-                        exec_start,
-                        output=f"Read {len(content)} bytes from {file_path}",
-                        tool=tool_name,
-                    )
-                    return {"success": True, "content": content}
-                except Exception as e:
-                    add_step(
-                        "execute",
-                        f"Read error: {file_path}",
-                        exec_start,
-                        output=str(e),
-                        tool=tool_name,
-                    )
-                    return {"success": False, "error": str(e)}
-
-            elif tool_name in ("markdown", "markdown_tool"):
-                content = tool_args.get("content", "")
-                add_step(
-                    "execute",
-                    "Markdown output",
-                    exec_start,
-                    code=content[:200],
-                    tool=tool_name,
-                )
-                return {"success": True, "content": content}
-
-            elif tool_name in ("final_answer", "final_answer_tool"):
-                answer = tool_args.get("answer", "")
-                add_step(
-                    "execute",
-                    "Final answer",
-                    exec_start,
-                    output=answer[:500],
-                    tool=tool_name,
-                )
-                return {"success": True, "answer": answer}
-
-            else:
-                # Unknown tool - just log it
-                add_step(
-                    "execute",
-                    f"Unknown tool: {tool_name}",
-                    exec_start,
-                    details=tool_args,
-                    tool=tool_name,
-                )
-                return {"success": True, "message": f"Tool {tool_name} acknowledged"}
+            """Execute a tool locally and return the result using shared mixin"""
+            return self._execute_tool(
+                tool_name, tool_args, workspace_root, add_step, all_code_generated
+            )
 
         async def process_stream(
             session: aiohttp.ClientSession,
@@ -1133,7 +1659,7 @@ class ResultCollector:
 
 async def run_tests(
     prompts: list[Prompt],
-    executor: MockExecutor | LiveExecutor,
+    executor: MockExecutor | LiveExecutor | ACPExecutor,
     evaluator: MetricsEvaluator,
     collector: ResultCollector,
     parallel: int = 1,
@@ -1186,13 +1712,39 @@ def main() -> int:
         "--mock", action="store_true", default=True, help="Mock mode (default)"
     )
     parser.add_argument(
-        "--live", action="store_true", help="Live mode (call real backend)"
+        "--live", action="store_true", help="Live mode (call real backend or ACP agent)"
     )
     parser.add_argument(
         "--force-live",
         action="store_true",
         help="Force live mode (ignore cache)",
     )
+
+    # ACP mode arguments
+    parser.add_argument(
+        "--acp",
+        action="store_true",
+        help="Use ACP executor (direct JSON-RPC with agent CLI) instead of HTTP backend",
+    )
+    parser.add_argument(
+        "--agent-path",
+        type=str,
+        default="",
+        help="Path to ACP agent CLI (default: ~/.local/bin/claude or $ACP_AGENT_PATH)",
+    )
+    parser.add_argument(
+        "--openrouter-key",
+        type=str,
+        default="",
+        help="OpenRouter API key (default: from config or $OPENROUTER_API_KEY)",
+    )
+    parser.add_argument(
+        "--openrouter-model",
+        type=str,
+        default="",
+        help="OpenRouter model name (default: from config or $OPENROUTER_MODEL)",
+    )
+
     parser.add_argument("--category", type=str, help="Test specific category")
     parser.add_argument("--prompt-id", type=str, help="Test specific prompt ID")
     parser.add_argument("--limit", type=int, help="Limit number of prompts")
@@ -1201,7 +1753,7 @@ def main() -> int:
         "--backend-url",
         type=str,
         default="http://localhost:8000",
-        help="Backend URL",
+        help="Backend URL (for HTTP mode)",
     )
     parser.add_argument(
         "--rate-limit-delay",
@@ -1258,13 +1810,27 @@ def main() -> int:
     elif args.live:
         mode = "live"
 
-    logger.info(f"Running {len(prompts)} prompts (mode: {mode})")
+    executor_type = "acp" if args.acp else "http"
+    logger.info(f"Running {len(prompts)} prompts (mode: {mode}, executor: {executor_type})")
 
     # Select executor
+    executor: MockExecutor | LiveExecutor | ACPExecutor
     if args.live or args.force_live:
-        executor: MockExecutor | LiveExecutor = LiveExecutor(
-            args.backend_url, force_live=args.force_live
-        )
+        if args.acp:
+            # ACP mode: direct OpenRouter API call
+            executor = ACPExecutor(
+                api_key=args.openrouter_key,
+                model=args.openrouter_model,
+                force_live=args.force_live,
+            )
+            logger.info(f"  Endpoint: {executor.endpoint}")
+            logger.info(f"  Model: {executor.model}")
+        else:
+            # HTTP mode: call backend API
+            executor = LiveExecutor(
+                args.backend_url, force_live=args.force_live
+            )
+            logger.info(f"  Backend URL: {args.backend_url}")
     else:
         executor = MockExecutor()
 
