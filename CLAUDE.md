@@ -123,3 +123,9 @@ gh issue edit <번호> --add-assignee @me
   파일과 무관한 로컬 수정이 통째로 커밋돼 push 된다.
 - 🔴 **`main` 브랜치에는 사용자가 그 요청에서 직접 승인했을 때만 커밋·푸시한다.**
   앞선 다른 작업의 지시나 "개인 저장소니까" 같은 판단은 승인이 아니다.
+
+## 저장소 슬롯 — 실행 명령은 `.claude/gate.sh` 한 곳
+
+검증 · 기동 · 빌드 명령은 `.claude/gate.sh` 에 있다(옛 `.claude/commands/{as,runIde,pab}.md` 를 옮김, lks21c/arcane#26).
+팩 스킬 `/as` · `/portal` · `/build` 가 그 단계(`as` · `portal` · `build`)를 부른다. JDK 는 `JAVA_HOME`, agent-server 체크아웃은
+`AGENT_SERVER_DIR` 로 준다 — 기계마다 다른 절대경로를 이 저장소에 적지 않는다.
